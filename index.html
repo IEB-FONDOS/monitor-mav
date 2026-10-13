@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitor MAV – Cheques y Pagarés</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="overlay">
+  <div class="spinner" id="spinner"></div>
+  <p id="loadMsg">Cargando datos…</p>
+</div>
+
+<!-- Header -->
+<header class="header">
+  <div style="display:flex;align-items:center;gap:16px">
+    <span class="badge" style="font-weight:700;letter-spacing:.5px">MONITOR MAV</span>
+    <div>
+      <h1>Cheques y Pagarés</h1>
+      <p id="periodLabel">Mercado Argentino de Valores</p>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <span class="badge" id="updBadge">—</span>
+    <button class="btn-reload" onclick="loadAndRender()">↺ Actualizar</button>
+  </div>
+</header>
+
+<!-- Tab nav -->
+<nav class="tab-nav">
+  <button class="tab-btn on" onclick="switchTab('hist')">Histórico</button>
+  <button class="tab-btn"    onclick="switchTab('rt')"><span class="live-dot" style="vertical-align:middle"></span>Tiempo Real</button>
+  <button class="tab-btn"    onclick="switchTab('emp')">Empresas</button>
+</nav>
+
+<!-- ══ SECCIÓN HISTÓRICO ══ -->
+<div id="sect-hist" class="tab-section on">
+
+<!-- Filters -->
+<div class="filters">
+  <div class="fg">
+    <span class="fl">Moneda</span>
+    <div class="mon-wrap" id="monWrap">
+      <button class="mon-btn on" data-v="ALL">Todas</button>
+    </div>
+  </div>
+  <div class="fg">
+    <span class="fl">Segmento</span>
+    <select class="fsel" id="fSeg"><option value="ALL">Todos</option></select>
+  </div>
+  <div class="fg">
+    <span class="fl">Tipo instrumento</span>
+    <select class="fsel" id="fTipo"><option value="ALL">Todos</option></select>
+  </div>
+  <div class="fg">
+    <span class="fl">Desde</span>
+    <input type="date" class="date-in" id="fDesde">
+  </div>
+  <div class="fg">
+    <span class="fl">Hasta</span>
+    <input type="date" class="date-in" id="fHasta">
+  </div>
+  <button class="btn-rst" onclick="resetFilters()">↺ Resetear</button>
+</div>
+
+<!-- Dashboard -->
+<main class="main">
+  <div class="kpis">
+    <div class="kpi" style="border-left-color:#E32D91">
+      <div class="kpi-lbl">Tasa Ponderada</div>
+      <div class="kpi-val" id="kTasa">—</div>
+      <div class="kpi-tags" id="kTasaTags"></div>
+    </div>
+    <div class="kpi" style="border-left-color:#1A49C8">
+      <div class="kpi-lbl" style="margin-bottom:8px">Actividad del Período</div>
+      <div class="kpi-split">
+        <div class="kpi-half">
+          <div class="kpi-val-sm" id="kOps">—</div>
+          <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px">Operaciones</div>
+          <div class="kpi-sub" id="kOpsSub" style="margin-top:3px">—</div>
+        </div>
+        <div class="kpi-half">
+          <div class="kpi-val-sm" id="kDias">—</div>
+          <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px">Días hábiles</div>
+          <div class="kpi-sub" id="kDiaSub" style="margin-top:3px">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row r2">
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-ttl">Tasa Ponderada por Tramo</span>
+        <span class="card-sub">TNA % · ponderada por monto</span>
+      </div>
+      <div style="position:relative;height:300px"><canvas id="cTramo"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-ttl">Evolución Temporal de Tasas</span>
+        <span class="card-sub">Tasa ponderada diaria por tramo</span>
+      </div>
+      <div style="position:relative;height:300px"><canvas id="cTemporal"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Resumen por Instrumento -->
+  <div class="row">
+    <div class="card card-full">
+      <div class="card-hdr">
+        <span class="card-ttl">Resumen por Instrumento</span>
+        <div class="instr-toggle">
+          <button class="instr-btn on" data-inst="ALL"  onclick="setInstr(this)">Todos</button>
+          <button class="instr-btn"    data-inst="CPD"  onclick="setInstr(this)">Cheques</button>
+          <button class="instr-btn"    data-inst="PAG"  onclick="setInstr(this)">Pagaré</button>
+          <button class="instr-btn"    data-inst="FCE"  onclick="setInstr(this)">FCE</button>
+        </div>
+      </div>
+      <div class="tbl-wrap" style="max-height:340px">
+        <table>
+          <thead><tr>
+            <th style="min-width:180px">Segmento</th>
+            <th style="text-align:right">Monto Nominal</th>
+            <th style="text-align:center">Rango Mayor Volumen</th>
+            <th style="text-align:right">TEA</th>
+            <th style="text-align:right">TEM</th>
+            <th style="text-align:right">TNA</th>
+          </tr></thead>
+          <tbody id="tInstr"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pie charts row -->
+  <div class="row r-tri">
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-ttl">Por Instrumento</span>
+        <span class="card-sub">% sobre monto total</span>
+      </div>
+      <div class="pie-wrap"><canvas id="cPieInst"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-ttl">Por Moneda</span>
+        <span class="card-sub">% sobre monto total</span>
+      </div>
+      <div class="pie-wrap"><canvas id="cPieMon"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-ttl">Por Segmento</span>
+        <span class="card-sub">% sobre monto total</span>
+      </div>
+      <div class="pie-wrap"><canvas id="cPieSeg"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Tasas por tramo line chart -->
+  <div class="row">
+    <div class="card card-full">
+      <div class="card-hdr">
+        <span class="card-ttl">Tasas Promedio por Tramo</span>
+        <span class="card-sub">Tasa ponderada por monto — eje X = plazo del documento</span>
+      </div>
+      <div style="position:relative;height:300px"><canvas id="cTasaTramo"></canvas></div>
+    </div>
+  </div>
+
+  <div class="row r3" style="align-items:stretch">
+    <div class="card" style="display:flex;flex-direction:column">
+      <div class="card-hdr">
+        <span class="card-ttl">Montos Negociados por Día</span>
+        <span class="card-sub" id="montSub">Total operado</span>
+      </div>
+      <div style="position:relative;flex:1;min-height:220px"><canvas id="cMontos"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-ttl">Tasas y Montos por Empresa</span>
+        <span class="card-sub" id="tblSub">Top 20 por monto operado</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:11px;color:var(--muted);min-width:60px">Categoría</span>
+          <div id="catChips" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:11px;color:var(--muted);min-width:60px">Tramo</span>
+          <div id="tramoChips" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end">
+          <input id="empresaSearch" type="text" placeholder="Buscar empresa…"
+            style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;
+                   background:var(--card);color:var(--fg);font-family:inherit;font-size:12px;min-width:180px;outline:none"
+            oninput="tblSearch=this.value.toLowerCase();updTable(filteredData)">
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Empresa</th><th>Categoría</th>
+            <th style="text-align:right">Monto</th>
+            <th style="text-align:right">Tasa Pond.</th>
+          </tr></thead>
+          <tbody id="tEmp"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card card-full">
+      <div class="card-hdr">
+        <span class="card-ttl">Volúmenes por Empresa · Mosaico</span>
+        <span class="card-sub">Área proporcional al monto · coloreado por categoría</span>
+      </div>
+      <svg id="treemap"></svg>
+      <div class="legend" id="catLegend"></div>
+    </div>
+  </div>
+</main>
+
+</div><!-- /sect-hist -->
+
+<!-- ══ SECCIÓN TIEMPO REAL ══ -->
+<div id="sect-rt" class="tab-section">
+
+  <!-- Filters RT -->
+  <div class="filters">
+    <div class="fg">
+      <span class="fl">Moneda</span>
+      <div class="mon-wrap" id="rtMonWrap"></div>
+    </div>
+    <div class="fg">
+      <span class="fl">Segmento</span>
+      <select class="fsel" id="rtFSeg"><option value="ALL">Todos</option></select>
+    </div>
+    <div class="fg">
+      <span class="fl">Tipo instrumento</span>
+      <select class="fsel" id="rtFTipo"><option value="ALL">Todos</option></select>
+    </div>
+    <button class="btn-rst" onclick="rtResetFilters()">↺ Resetear</button>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <span class="badge" id="rtUpdBadge">—</span>
+      <button class="btn-reload" onclick="loadRT()">↺ Actualizar</button>
+    </div>
+  </div>
+
+  <main class="main">
+
+    <!-- KPIs RT -->
+    <div class="kpis" style="grid-template-columns:1fr 1fr 1fr">
+      <div class="kpi" style="border-left-color:#E32D91">
+        <div class="kpi-lbl">Tasa Ponderada</div>
+        <div class="kpi-val" id="rtKTasa">—</div>
+        <div class="kpi-tags" id="rtKTasaTags"></div>
+      </div>
+      <div class="kpi" style="border-left-color:#1A49C8">
+        <div class="kpi-lbl" style="margin-bottom:6px">Actividad del Día</div>
+        <div class="kpi-split">
+          <div class="kpi-half">
+            <div class="kpi-val-sm" id="rtKOps">—</div>
+            <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px">Operaciones</div>
+            <div class="kpi-sub" id="rtKMonto" style="margin-top:3px">—</div>
+          </div>
+          <div class="kpi-half">
+            <div class="kpi-val-sm" id="rtKMon">—</div>
+            <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px">Monto total</div>
+            <div class="kpi-sub" id="rtKFecha" style="margin-top:3px">—</div>
+          </div>
+        </div>
+      </div>
+      <div class="kpi" style="border-left-color:#22c55e">
+        <div class="kpi-lbl"><span class="live-dot"></span>Última Operación</div>
+        <div class="rt-hora" id="rtKHora">—</div>
+        <div class="rt-fecha-lbl" id="rtKFechaHora">—</div>
+      </div>
+    </div>
+
+    <!-- Evolución intraday: tasas por hora -->
+    <div class="row r2">
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-ttl">Tasa Ponderada por Tramo</span>
+          <span class="card-sub">TNA % · ponderada por monto</span>
+        </div>
+        <div style="position:relative;height:280px"><canvas id="rtCTramo"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-ttl">Evolución Intraday de Tasas</span>
+          <span class="card-sub">Tasa ponderada acumulada por hora · T.MIN.</span>
+        </div>
+        <div style="position:relative;height:280px"><canvas id="rtCIntraday"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Montos por hora + Resumen instrumento -->
+    <div class="row r2">
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-ttl">Monto por Hora</span>
+          <span class="card-sub" id="rtMontSub">—</span>
+        </div>
+        <div style="position:relative;height:260px"><canvas id="rtCMontos"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-ttl">Tasas Promedio por Tramo</span>
+          <span class="card-sub">Tasa ponderada por monto · plazo del documento</span>
+        </div>
+        <div style="position:relative;height:260px"><canvas id="rtCTasaTramo"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Pies -->
+    <div class="row r-tri">
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-ttl">Por Instrumento</span>
+          <span class="card-sub">% monto del día</span>
+        </div>
+        <div class="pie-wrap"><canvas id="rtCPieInst"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-ttl">Por Moneda</span>
+          <span class="card-sub">% monto del día</span>
+        </div>
+        <div class="pie-wrap"><canvas id="rtCPieMon"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-ttl">Por Segmento</span>
+          <span class="card-sub">% monto del día</span>
+        </div>
+        <div class="pie-wrap"><canvas id="rtCPieSeg"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Tabla operaciones del día -->
+    <div class="row">
+      <div class="card card-full">
+        <div class="card-hdr">
+          <span class="card-ttl">Operaciones del Día</span>
+          <span class="card-sub" id="rtTblSub">—</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+          <div id="rtCatChips" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+          <input id="rtEmpresaSearch" type="text" placeholder="Buscar empresa…"
+            style="margin-left:auto;padding:4px 10px;border:1px solid var(--border);border-radius:6px;
+                   background:var(--card);color:var(--fg);font-family:inherit;font-size:12px;min-width:180px;outline:none"
+            oninput="rtTblSearch=this.value.toLowerCase();rtUpdTable(rtFilteredData)">
+        </div>
+        <div class="tbl-wrap" style="max-height:400px">
+          <table>
+            <thead><tr>
+              <th>#</th><th>Hora</th><th>Empresa</th><th>Categoría</th>
+              <th>Tramo</th><th>Segmento</th>
+              <th style="text-align:right">Monto</th>
+              <th style="text-align:right">Tasa</th>
+            </tr></thead>
+            <tbody id="rtTEmp"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Curva de Tasas – Bubble Chart -->
+    <div class="row">
+      <div class="card card-full">
+        <div class="card-hdr" style="flex-wrap:wrap;gap:10px">
+          <div>
+            <span class="card-ttl">Curva de Tasas por Plazo</span>
+            <span class="card-sub" style="display:block;margin-top:2px">Eje X = días · Eje Y = tasa ponderada · Tamaño = volumen</span>
+          </div>
+          <span class="card-sub" id="bubbleSub" style="margin-left:auto">—</span>
+        </div>
+
+        <!-- Controles del bubble -->
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px">
+
+          <!-- Categoría -->
+          <div>
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:5px">Categoría</div>
+            <div id="bubbleCatChips" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+          </div>
+
+          <!-- Selector empresas -->
+          <div style="flex:1;min-width:260px;max-width:480px">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:5px">Empresas <span id="bubbleEmpCount" style="font-weight:400;text-transform:none;letter-spacing:0">(todas)</span></div>
+            <div class="emp-selector" id="bubbleEmpSelector">
+              <div class="emp-input-wrap" id="bubbleEmpWrap" onclick="bubbleToggleDropdown()">
+                <div id="bubbleEmpChips" style="display:contents"></div>
+                <input class="emp-search-input" id="bubbleEmpInput" placeholder="Buscar empresa…"
+                  oninput="bubbleFilterDropdown(this.value)" onfocus="bubbleOpenDropdown()">
+              </div>
+              <div class="emp-dropdown" id="bubbleEmpDropdown">
+                <div class="emp-sel-actions">
+                  <button onclick="bubbleSelectAll()">Seleccionar todas</button>
+                  <button onclick="bubbleClearAll()">Limpiar</button>
+                </div>
+                <div id="bubbleEmpList"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Color por -->
+          <div>
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:5px">Color por</div>
+            <div style="display:flex;gap:5px">
+              <button id="bcBy-empresa"  onclick="bubbleSetColorBy('empresa')"
+                style="padding:4px 10px;border-radius:6px;border:1px solid var(--pri);font-family:inherit;font-size:11px;cursor:pointer;background:var(--pri);color:#fff">Empresa</button>
+              <button id="bcBy-categoria" onclick="bubbleSetColorBy('categoria')"
+                style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);font-family:inherit;font-size:11px;cursor:pointer;background:transparent;color:var(--muted)">Categoría</button>
+              <button id="bcBy-segmento" onclick="bubbleSetColorBy('segmento')"
+                style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);font-family:inherit;font-size:11px;cursor:pointer;background:transparent;color:var(--muted)">Segmento</button>
+            </div>
+          </div>
+
+        </div>
+
+        <div style="position:relative;height:420px"><canvas id="rtCBubble"></canvas></div>
+      </div>
+    </div>
+
+  </main>
+</div><!-- /sect-rt -->
+
+<!-- ══ SECCIÓN EMPRESAS ══ -->
+<div id="sect-emp" class="tab-section">
+
+  <!-- Barra de búsqueda -->
+  <div class="emp-search-box">
+    <div class="emp-search-row">
+
+      <!-- Empresa principal -->
+      <div style="flex:1;min-width:240px">
+        <div class="emp-search-label">Empresa principal</div>
+        <div class="emp-multi-wrap" id="empMainWrap">
+          <div class="emp-multi-input" id="empMainInput" onclick="focusEmpMainInput()">
+            <input type="text" class="emp-text-in" id="empMainTextIn"
+              placeholder="Buscar empresa…"
+              oninput="filterEmpMainDrop(this.value)"
+              onfocus="openEmpMainDrop()"
+              onblur="setTimeout(closeEmpMainDrop,200)">
+          </div>
+          <div class="emp-dd" id="empMainDd"></div>
+        </div>
+      </div>
+
+      <!-- Empresas a comparar -->
+      <div style="flex:1;min-width:240px">
+        <div class="emp-search-label">Comparar con…</div>
+        <div class="emp-multi-wrap" id="empCmpWrap">
+          <div class="emp-multi-input" id="empCmpInput" onclick="focusEmpCmpInput()">
+            <input type="text" class="emp-text-in" id="empCmpTextIn"
+              placeholder="Agregar empresas…"
+              oninput="filterEmpCmpDrop(this.value)"
+              onfocus="openEmpCmpDrop()"
+              onblur="setTimeout(closeEmpCmpDrop,200)">
+          </div>
+          <div class="emp-dd" id="empCmpDd"></div>
+        </div>
+      </div>
+
+      <!-- Período -->
+      <div>
+        <div class="emp-search-label">Período</div>
+        <div class="emp-date-row">
+          <span style="font-size:11px;color:var(--muted)">Desde</span>
+          <input type="date" class="date-in" id="empDesde" onchange="renderEmp()">
+          <span style="font-size:11px;color:var(--muted)">Hasta</span>
+          <input type="date" class="date-in" id="empHasta" onchange="renderEmp()">
+          <button class="btn-rst" onclick="empResetDates()">↺</button>
+        </div>
+      </div>
+
+      <!-- Moneda -->
+      <div>
+        <div class="emp-search-label">Moneda</div>
+        <div class="mon-wrap" id="empMonWrap"></div>
+      </div>
+
+      <!-- Segmento -->
+      <div>
+        <div class="emp-search-label">Segmento</div>
+        <select class="fsel" id="empSegmento" onchange="renderEmp()">
+          <option value="ALL">Todos</option>
+        </select>
+      </div>
+
+      <!-- Instrumento -->
+      <div>
+        <div class="emp-search-label">Instrumento</div>
+        <div class="instr-toggle" id="empInstrToggle">
+          <button class="instr-btn on" data-inst="ALL" onclick="setEmpInstr(this)">Todos</button>
+          <button class="instr-btn"   data-inst="CPD" onclick="setEmpInstr(this)">Cheques</button>
+          <button class="instr-btn"   data-inst="PAG" onclick="setEmpInstr(this)">Pagaré</button>
+          <button class="instr-btn"   data-inst="FCE" onclick="setEmpInstr(this)">FCE</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <main class="main" id="empMain">
+    <div class="emp-empty" id="empEmpty">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      Buscá una empresa para comenzar
+    </div>
+
+    <div id="empKpis" style="display:none">
+
+      <!-- KPI cards -->
+      <div class="emp-kpi-grid" id="empKpiGrid"></div>
+
+      <!-- Tabla comparativa (aparece cuando hay empresas a comparar) -->
+      <div class="row" id="empCmpRow" style="display:none">
+        <div class="card card-full">
+          <div class="card-hdr">
+            <span class="card-ttl" id="empCmpTtl">Comparativo</span>
+            <span class="card-sub">Promedio ponderado por monto de las empresas de comparación</span>
+          </div>
+          <div class="tbl-wrap" style="max-height:none">
+            <table class="cmp-table">
+              <thead id="empCmpHead"></thead>
+              <tbody id="empCmpBody"></tbody>
+              <tfoot id="empCmpFoot"></tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pies: moneda + instrumento + tramo -->
+      <div class="row r-tri">
+        <div class="card">
+          <div class="card-hdr">
+            <span class="card-ttl">Por Moneda</span>
+            <span class="card-sub">% sobre monto total</span>
+          </div>
+          <div class="pie-wrap"><canvas id="empCPieMon"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-hdr">
+            <span class="card-ttl">Por Instrumento</span>
+            <span class="card-sub">% sobre monto total</span>
+          </div>
+          <div class="pie-wrap"><canvas id="empCPieInst"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-hdr">
+            <span class="card-ttl">Distribución por Tramo</span>
+            <span class="card-sub">% del monto total</span>
+          </div>
+          <div id="empTramoWrap" style="padding:8px 0"></div>
+        </div>
+      </div>
+
+      <!-- Vencimientos por mes + Montos emitidos por fecha -->
+      <div class="row r2">
+        <div class="card">
+          <div class="card-hdr">
+            <span class="card-ttl">Vencimientos por Mes</span>
+            <span class="card-sub" id="empVncSub">Monto proyectado (fecha emisión + PPV)</span>
+          </div>
+          <div style="position:relative;height:280px"><canvas id="empCVenc"></canvas></div>
+          <p style="font-size:10px;color:var(--muted);margin-top:6px">* Incluye emisiones a partir dic-25</p>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column">
+          <div class="card-hdr">
+            <span class="card-ttl">Montos Emitidos por Fecha</span>
+            <span class="card-sub" id="empMontSub">Total operado por empresa</span>
+          </div>
+          <div style="position:relative;flex:1;min-height:280px"><canvas id="empCMontos"></canvas></div>
+        </div>
+        <div class="card" style="display:none" id="empCmpPieCard">
+          <div class="card-hdr">
+            <span class="card-ttl">Comparación de Tasas</span>
+            <span class="card-sub">TNA ponderada por empresa</span>
+          </div>
+          <div class="pie-wrap"><canvas id="empCPieTasa"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Distribución por Agente Vendedor -->
+      <div class="row r2">
+        <div class="card">
+          <div class="card-hdr">
+            <span class="card-ttl">Distribución por Agente Vendedor</span>
+            <span class="card-sub">% sobre monto total · top 10</span>
+          </div>
+          <div class="pie-wrap" style="height:380px"><canvas id="empCVendedorPie" style="max-height:380px"></canvas></div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column">
+          <div class="card-hdr">
+            <span class="card-ttl">Ranking por Agente Vendedor</span>
+            <span class="card-sub">Top 15 por monto · apilado por empresa</span>
+          </div>
+          <div style="position:relative;flex:1;min-height:380px"><canvas id="empCVendedorBar"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Distribución por Agente Comprador -->
+      <div class="row r2">
+        <div class="card">
+          <div class="card-hdr">
+            <span class="card-ttl">Distribución por Agente Comprador</span>
+            <span class="card-sub">% sobre monto total · top 10</span>
+          </div>
+          <div class="pie-wrap" style="height:380px"><canvas id="empCCompradorPie" style="max-height:380px"></canvas></div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column">
+          <div class="card-hdr">
+            <span class="card-ttl">Ranking por Agente Comprador</span>
+            <span class="card-sub">Top 15 por monto · apilado por empresa</span>
+          </div>
+          <div style="position:relative;flex:1;min-height:380px"><canvas id="empCCompradorBar"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Tabla detalle operaciones -->
+      <div class="row">
+        <div class="card card-full">
+          <div class="card-hdr">
+            <span class="card-ttl">Detalle de Operaciones</span>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <select class="fsel" id="empOpVendedor" onchange="renderEmpOpTable()" style="font-size:12px">
+                <option value="ALL">Ag. Vendedor</option>
+              </select>
+              <select class="fsel" id="empOpComprador" onchange="renderEmpOpTable()" style="font-size:12px">
+                <option value="ALL">Ag. Comprador</option>
+              </select>
+              <input type="text" id="empOpSearch" placeholder="Filtrar…"
+                style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;outline:none"
+                oninput="renderEmpOpTable()">
+              <span class="card-sub" id="empOpCount"></span>
+            </div>
+          </div>
+          <div class="tbl-wrap" style="max-height:360px">
+            <table>
+              <thead><tr>
+                <th>Empresa</th>
+                <th>Fecha Emisión</th>
+                <th>Instrumento</th>
+                <th>Moneda</th>
+                <th style="text-align:right">Monto</th>
+                <th style="text-align:right">TNA %</th>
+                <th style="text-align:center">Tramo</th>
+                <th style="text-align:right">PPV (días)</th>
+                <th>Vence (aprox.)</th>
+                <th>Ag. Vendedor</th>
+                <th>Ag. Comprador</th>
+              </tr></thead>
+              <tbody id="empOpBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /empKpis -->
+  </main>
+</div><!-- /sect-emp -->
+
+<script src="src/app.js"></script>
+</body>
+</html>

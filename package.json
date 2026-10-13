@@ -1,0 +1,24 @@
+{
+  "name": "monitor-mav",
+  "version": "1.0.0",
+  "description": "Dashboard de Cheques y Pagarés - Mercado Argentino de Valores",
+  "type": "module",
+  "main": "index.html",
+  "scripts": {
+    "dev": "python -m http.server 8000",
+    "serve": "npx http-server -p 8000 -c-1"
+  },
+  "keywords": [
+    "dashboard",
+    "financial",
+    "argentina",
+    "cheques",
+    "pagarés",
+    "MAV"
+  ],
+  "author": "IEB",
+  "license": "MIT",
+  "devDependencies": {
+    "prettier": "^3.0.0"
+  }
+}
