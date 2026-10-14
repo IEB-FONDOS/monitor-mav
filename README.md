@@ -1,19 +1,14 @@
-# Monitor MAV – Cheques y Pagarés
+# Monitor MAV · IEB
 
-Dashboard estático (HTML + JS) de operaciones negociadas de cheques, pagarés y FCE en MAV.
-Adaptado de [imarinione618/Reporte-MAV](https://github.com/imarinione618/Reporte-MAV).
+Dashboard de cheques, pagarés y FCE negociados en MAV. Sitio estático (GitHub Pages).
 
-## Datos
-- Google Sheet `1xrJOqC7UoFQoyqFErfXFjbLfp2h13K5Tzs7YE1S9uv8`, pestaña `historico` (gid `1748110732`), publicada como CSV.
-- Carga automática: API MAV (`cpd-subastas-listado-csv_v2`) c/5 min vía Apps Script.
-- Carga manual (respaldo): CSV diario de MAV → carpeta Drive `MAV_entrada` → menú **MAV → Importar CSVs pendientes** (Apps Script `MAV_import.gs`).
-- Configuración en `src/app.js` (constantes `SHEET_ID`, `PUB_ID`, `GID`).
+**Pestañas**
+- **Mercado**: KPIs con variación d/d, curva de tasas por tramo, composición del volumen, mapa de tasas (tramo × categoría o × día), volumen por tramo, top 15 responsables y resumen por categoría de riesgo.
+- **En vivo**: rueda del día (se refresca cada 5 min), curva de hoy vs. curva ajustada de ayer, operaciones fuera de curva, intradía y tabla de subastas.
+- **Emisores**: perfil de un responsable (hasta 2 comparados): spread vs. mercado por tramo, vencimientos, agentes compradores y detalle de operaciones.
+- **Curvas**: nube plazo × TNA con curva ajustada por segmento (TNA = a + b·ln(plazo)), tasas implícitas, evolución diaria y spread NG − Avalado.
 
-## Cambios respecto al original
-- Apunta al Sheet propio.
-- Tiempo Real lee la pestaña `hoy` (constante `RT_GID`), que el Apps Script actualiza c/5 min vía API MAV.
-- Segmento + columna CALIFICADO → "No Garantizado Calificado", etc.
-- Sin logo de one618.
+**Datos**: Google Sheet publicado (pestañas `historico` y `hoy`), alimentado por Apps Script (`MAV_import.gs`) desde la API de MAV.
+Configuración en `src/app.js`: `PUB_ID`, `GID`, `RT_GID`.
 
-## Publicar
-Sitio 100% estático: GitHub Pages (Settings → Pages → Deploy from a branch → main / root) o Vercel.
+**Archivos**: `index.html`, `assets/styles.css`, `src/app.js`. Dependencia: Chart.js 4.4.0 (CDN).
