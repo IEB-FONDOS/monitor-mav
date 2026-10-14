@@ -219,6 +219,69 @@ document.addEventListener('click', e => {
   const c = e.target.closest('[data-csv]'); if (c) exportTable(c.dataset.csv);
 });
 
+// ── Export a Excel (.xlsx) de las operaciones filtradas ───────────────────────
+const XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+let xlsxLoading = null;
+function loadXLSX() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (!xlsxLoading) xlsxLoading = new Promise((ok, ko) => { const sc = document.createElement('script'); sc.src = XLSX_URL; sc.onload = () => ok(window.XLSX); sc.onerror = () => { xlsxLoading = null; ko(new Error('No se pudo cargar la librería de Excel')); }; document.head.appendChild(sc); });
+  return xlsxLoading;
+}
+const xlSerial = iso => (Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) - Date.UTC(1899, 11, 30)) / 864e5;   // fecha Excel sin hora
+function opsParaExportar() {
+  if (view === 'vivo') return { ops: HOY.filter(o => passBase(o)), vivo: true, desc: 'Rueda de hoy' + (HOY[0] ? ' ' + fmtD(HOY[0].date) : '') };
+  if (view === 'emisores' && EMP.main) {
+    const names = [EMP.main, ...EMP.cmp];
+    return { ops: HIST.filter(o => names.includes(o.emp) && F.mons.includes(o.mon) && inPer(o) && (F.calif === 'ALL' || o.calif === F.calif)), desc: 'Emisores: ' + names.join(', ') };
+  }
+  return { ops: HIST.filter(o => passBase(o) && inPer(o)), desc: 'Histórico filtrado' };
+}
+async function exportXlsx() {
+  const btn = $('btnXlsx'); btn.disabled = true; const txt = btn.textContent; btn.textContent = 'Generando…';
+  try {
+    const X = await loadXLSX();
+    const { ops, vivo, desc } = opsParaExportar();
+    if (!ops.length) { alert('No hay operaciones con los filtros actuales.'); return; }
+    const sorted = [...ops].sort((a, b) => b.date.localeCompare(a.date) || (b.hconc || b.tmin || '').localeCompare(a.hconc || a.tmin || '') || b.monto - a.monto);
+    const monL = Object.fromEntries(MONEDAS.map(m => [m.k, m.l]));
+    const head = ['Fecha', 'Subasta', ...(vivo ? ['Estado', 'Inicio', 'Concertación'] : []), 'Segmento', 'Categoría', 'Instrumento', 'Instrumento (detalle)', 'Liquidación', 'Plazo (días)', 'Tramo', 'TNA %', 'TEA %', 'Moneda', 'Monto', 'Cant. instrumentos', 'Responsable', 'CUIT responsable', 'PyME (MAV)', 'Inv. calificado', 'Agente comprador', 'Agente vendedor'];
+    const rows = sorted.map(o => [
+      xlSerial(o.date), o.id ? +o.id || o.id : '', ...(vivo ? [o.estado, o.tmin, o.hconc] : []),
+      o.seg, o.cat, o.tipo, o.tipoRaw, o.plz, isFinite(o.ppv) ? o.ppv : '', o.tramo,
+      isFinite(o.tna) ? +o.tna.toFixed(4) : '', isFinite(o.tna) && o.ppv > 0 ? +tea(o.tna, o.ppv).toFixed(4) : '',
+      monL[o.mon] || o.mon, o.monto, o.cant, o.emp, o.cuit, o.pyme, o.calif, o.comp, o.vend,
+    ]);
+    const ws = X.utils.aoa_to_sheet([head, ...rows]);
+    const ci = n => head.indexOf(n);
+    const fmtCol = (name, z) => { const c = ci(name); if (c < 0) return; for (let r = 1; r <= rows.length; r++) { const cell = ws[X.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = z; else if (cell && cell.t === 'd') cell.z = z; } };
+    fmtCol('Fecha', 'dd/mm/yyyy'); fmtCol('TNA %', '0.00'); fmtCol('TEA %', '0.00'); fmtCol('Monto', '#,##0.00');
+    ws['!cols'] = head.map(h => ({ wch: h === 'Responsable' ? 42 : h === 'Categoría' || h === 'Instrumento (detalle)' ? 20 : Math.max(10, h.length + 2) }));
+    ws['!autofilter'] = { ref: X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: head.length - 1 } }) };
+    ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+
+    const r = rated(ops);
+    const filt = [
+      ['Monitor MAV · exportación'], [],
+      ['Vista', desc],
+      ['Período', vivo ? '—' : `${fmtD(F.desde)} a ${fmtD(F.hasta)}`],
+      ['Moneda', F.mons.map(m => monL[m]).join(' + ')],
+      ['Segmento', F.seg === 'ALL' ? 'Todos' : F.seg], ['Categoría', F.cat === 'ALL' ? 'Todas' : F.cat],
+      ['Instrumento', F.tipo === 'ALL' ? 'Todos' : F.tipo], ['Inv. calificado', { ALL: 'Todos', NO: 'Excluidos', SI: 'Solo' }[F.calif]],
+      ['Tramo', F.tramo ? F.tramo + ' d' : 'Todos'], [],
+      ['Operaciones', ops.length], ['Monto total', +sum(ops).toFixed(2)], ['TNA ponderada %', isFinite(wavg(r)) ? +wavg(r).toFixed(4) : ''], ['Plazo prom. ponderado (días)', isFinite(wavg(r, 'ppv')) ? +wavg(r, 'ppv').toFixed(1) : ''],
+      [], ['Generado', new Date().toLocaleString('es-AR')],
+      ...(monMix() ? [[], ['Atención', 'La selección mezcla pesos y dólares: montos y tasas no son comparables entre sí.']] : []),
+    ];
+    const ws2 = X.utils.aoa_to_sheet(filt); ws2['!cols'] = [{ wch: 30 }, { wch: 60 }];
+    const wb = X.utils.book_new();
+    X.utils.book_append_sheet(wb, ws, 'Operaciones');
+    X.utils.book_append_sheet(wb, ws2, 'Filtros');
+    const tag = vivo ? 'hoy_' + (HOY[0]?.date || '') : (F.desde === F.hasta ? F.desde : F.desde + '_a_' + F.hasta);
+    X.writeFile(wb, `monitor-mav_operaciones_${tag}.xlsx`, { compression: true });
+  } catch (e) { alert('No se pudo generar el Excel: ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = txt; }
+}
+
 // ── Chart.js ──────────────────────────────────────────────────────────────────
 function chartDefaults() {
   Chart.defaults.color = '#717a86';
@@ -732,6 +795,7 @@ function init() {
   if (typeof Chart === 'undefined') { overlay('No se pudo cargar la librería de gráficos (Chart.js). Revisá la conexión.', true); return; }
   chartDefaults();
   wireFilters(); wireEmisores(); wireSpread();
+  $('btnXlsx').onclick = exportXlsx;
   $('tabs').onclick = e => { const t = e.target.closest('[data-v]'); if (t) setView(t.dataset.v); };
   $('mHmMode').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { hmMode = b.dataset.m; render(); } };
   $('vEst').onclick = e => { const b = e.target.closest('[data-e]'); if (b) { vEst = b.dataset.e; renderVivo(); } };

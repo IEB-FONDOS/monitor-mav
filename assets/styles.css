@@ -44,6 +44,11 @@ button,input,select{font:inherit;color:inherit}
 .active-f{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 12px}
 .active-f .chip{background:rgba(166,230,53,.1);border-color:rgba(166,230,53,.35);color:var(--accent);font-size:12px}
 
+/* ── botón Excel ── */
+.btn.xl{margin-left:auto;background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700}
+.btn.xl:hover{filter:brightness(1.08);color:var(--accent-ink)}
+.btn.xl:disabled{opacity:.6;cursor:wait}
+
 /* ── toggles de series ── */
 .tg{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px 3px 8px;border-radius:999px;border:1px solid var(--line-2);background:transparent;color:var(--muted);cursor:pointer}
 .tg i{width:10px;height:10px;border-radius:3px;display:inline-block;opacity:.35}
