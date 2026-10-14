@@ -140,19 +140,30 @@
       </div>
       <div class="card">
         <div class="ch"><div class="ct">Tasas implícitas</div><button class="ico" data-csv="cImpl">CSV</button></div>
-        <table id="cImpl"></table>
+        <div class="tbl-wrap"><table id="cImpl"></table></div>
         <div class="hint">TNA estimada por la curva ajustada a cada plazo.</div>
       </div>
     </div>
-    <div class="row r-66">
+    <div class="row r-1">
       <div class="card">
-        <div class="ch"><div class="ct">Evolución diaria de la TNA</div><div class="tools"><span class="cs">ponderada por segmento</span><button class="ico" data-png="cEvo">PNG</button></div></div>
+        <div class="ch"><div class="ct">Evolución diaria de la TNA</div><div class="tools"><span class="cs">ponderada por monto</span><button class="ico" data-png="cEvo">PNG</button></div></div>
         <div class="leg" id="cEvoLeg"></div>
         <div class="chart"><canvas id="cEvo"></canvas></div>
       </div>
+    </div>
+    <div class="row r-1">
       <div class="card">
-        <div class="ch"><div class="ct">Spread No Garantizado − Avalado</div><div class="tools"><span class="cs">puntos básicos</span><button class="ico" data-png="cSpread">PNG</button></div></div>
-        <div class="chart"><canvas id="cSpread"></canvas></div>
+        <div class="ch"><div class="ct" id="spTitle">Spread histórico</div><div class="tools"><span class="cs">puntos básicos · A − B</span><button class="ico" data-png="cSpread">PNG</button></div></div>
+        <div class="picker" style="margin-bottom:12px">
+          <span class="fl">A</span><input class="inp" id="spA" list="spList" style="width:300px" placeholder="Segmento, categoría o responsable…">
+          <button class="btn" id="spSwap" title="Invertir A y B">⇄</button>
+          <span class="fl">menos B</span><input class="inp" id="spB" list="spList" style="width:300px" placeholder="Segmento, categoría o responsable…">
+          <label class="chk"><input type="checkbox" id="spTramo" checked> comparar dentro del mismo tramo</label>
+          <datalist id="spList"></datalist>
+        </div>
+        <div class="kpis" id="spStats"></div>
+        <div class="chart" style="height:300px"><canvas id="cSpread"></canvas></div>
+        <div class="hint">Spread diario = TNA(A) − TNA(B), ponderadas por monto. Con "mismo tramo" se compara solo dentro de cada tramo de plazo (ponderando por el monto de A), así la diferencia no se explica por plazos distintos. Días sin operaciones de A o B quedan vacíos. A y B ignoran los filtros de segmento y categoría; respetan moneda, instrumento, inversor calificado y período.</div>
       </div>
     </div>
   </section>

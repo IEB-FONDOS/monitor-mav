@@ -44,6 +44,16 @@ button,input,select{font:inherit;color:inherit}
 .active-f{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 12px}
 .active-f .chip{background:rgba(166,230,53,.1);border-color:rgba(166,230,53,.35);color:var(--accent);font-size:12px}
 
+/* ── toggles de series ── */
+.tg{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px 3px 8px;border-radius:999px;border:1px solid var(--line-2);background:transparent;color:var(--muted);cursor:pointer}
+.tg i{width:10px;height:10px;border-radius:3px;display:inline-block;opacity:.35}
+.tg.on{color:var(--text);background:var(--card-2)}
+.tg.on i{opacity:1}
+.tg:hover{border-color:rgba(255,255,255,.25)}
+.chip.warn{white-space:normal;max-width:100%;background:rgba(201,133,0,.12);border-color:rgba(201,133,0,.45);color:#e0a63a;cursor:default}
+.chk{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);cursor:pointer}
+.chk input{accent-color:#A6E635;width:15px;height:15px}
+
 /* ── KPIs ── */
 .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:12px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px 10px;min-width:0}
@@ -147,7 +157,7 @@ tbody tr:hover td{background:rgba(255,255,255,.02)}
 
 /* ── emisores ── */
 .picker{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.picker input{width:340px;max-width:100%}
+.picker input:not([type=checkbox]){width:340px;max-width:100%}
 .cmp{display:flex;gap:6px;flex-wrap:wrap}
 .cmp .chip{display:flex;align-items:center;gap:6px}
 .cmp .chip i{width:9px;height:9px;border-radius:2px;display:inline-block}
@@ -165,4 +175,4 @@ tbody tr:hover td{background:rgba(255,255,255,.02)}
 .view{display:none}.view.on{display:block}
 
 @media (max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.r-75,.r-57,.r-66,.r-333{grid-template-columns:1fr}}
-@media (max-width:640px){.wrap{padding:0 16px 32px}.kpis{grid-template-columns:1fr 1fr}.stamp{margin-left:0}.rk{grid-template-columns:18px minmax(0,1.4fr) minmax(0,1fr) minmax(0,.8fr)}.rk .c-cat{display:none}.search{width:100%}}
+@media (max-width:640px){.picker input:not([type=checkbox]){width:100%!important}.wrap{padding:0 16px 32px}.kpis{grid-template-columns:1fr 1fr}.stamp{margin-left:0}.rk{grid-template-columns:18px minmax(0,1.4fr) minmax(0,1fr) minmax(0,.8fr)}.rk .c-cat{display:none}.search{width:100%}}

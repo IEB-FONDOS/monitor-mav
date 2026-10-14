@@ -35,6 +35,21 @@ const MONEDAS = [
 ];
 const TIPOS = ['ECHEQ', 'Pagaré', 'FCE', 'CPD'];
 const PERIODOS = ['1D', '1S', '1M', '3M', 'YTD', 'Todo'];
+const TOTAL = { k: 'Total', l: 'Todos juntos', c: '#e9ecef' };
+const SHOW = { 'Avalado': true, 'No Garantizado': true, 'Garantizado': true, 'Total': false };
+const SER = () => [...SEGS.map(s => ({ ...s, l: s.k, f: o => o.seg === s.k })), { ...TOTAL, f: () => true }].filter(s => SHOW[s.k]);
+function serToggles(id, extra = []) {
+  $(id).innerHTML = [...SEGS.map(s => ({ k: s.k, l: s.k, c: s.c })), { k: 'Total', l: TOTAL.l, c: TOTAL.c }]
+    .map(s => `<button class="tg${SHOW[s.k] ? ' on' : ''}" data-s="${s.k}"><i style="background:${s.c}"></i>${s.l}</button>`).join('') +
+    extra.map(i => `<span><i class="${i.cls || ''}" style="background:${i.c}"></i>${esc(i.l)}</span>`).join('');
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-s]'); if (!b) return;
+  if (e.altKey) { Object.keys(SHOW).forEach(k => SHOW[k] = k === b.dataset.s); }   // Alt+clic = solo ese
+  else SHOW[b.dataset.s] = !SHOW[b.dataset.s];
+  if (!Object.values(SHOW).some(Boolean)) SHOW.Total = true;
+  render();
+});
 const ENT_C = ['#6ea514', '#3987e5', '#d55181'];          // emisor principal + 2 comparados
 const RAMP = ['#1f2a12', '#2c3e13', '#3c5615', '#4f7117', '#668f19', '#82b11d', '#a6e635'];
 
@@ -42,7 +57,7 @@ const RAMP = ['#1f2a12', '#2c3e13', '#3c5615', '#4f7117', '#668f19', '#82b11d', 
 let HIST = [], HOY = [], HOY_AT = null;
 let DATES = [];
 const charts = {};
-const F = { mon: '$', seg: 'ALL', cat: 'ALL', tipo: 'ALL', calif: 'ALL', per: '1M', desde: '', hasta: '', tramo: null };
+const F = { mons: ['$'], seg: 'ALL', cat: 'ALL', tipo: 'ALL', calif: 'ALL', per: '1M', desde: '', hasta: '', tramo: null };
 let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '';
 let EMP = { main: null, cmp: [] };
 let rtTimer = null;
@@ -50,7 +65,9 @@ let rtTimer = null;
 // ── Utilidades ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const fmtN = (v, d = 0) => (v == null || !isFinite(v)) ? '—' : v.toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
-const curSym = () => F.mon === '$' ? '$' : 'US$';
+const isUSD = k => k !== '$';
+const curSym = () => F.mons.every(m => m === '$') ? '$' : F.mons.every(isUSD) ? 'US$' : '$/US$';
+const monMix = () => F.mons.some(m => m === '$') && F.mons.some(isUSD);
 function fmtMonto(v, sym = curSym()) {
   if (!isFinite(v)) return '—';
   if (Math.abs(v) >= 1e9) return `${sym}${fmtN(v / 1e9, 1)} MM`;
@@ -120,7 +137,7 @@ function toOps(text) {
 
 // ── Filtros ───────────────────────────────────────────────────────────────────
 function passBase(o, skip = {}) {
-  if (!skip.mon && o.mon !== F.mon) return false;
+  if (!skip.mon && !F.mons.includes(o.mon)) return false;
   if (!skip.seg && F.seg !== 'ALL' && o.seg !== F.seg) return false;
   if (!skip.cat && F.cat !== 'ALL' && o.cat !== F.cat) return false;
   if (!skip.tipo && F.tipo !== 'ALL' && o.tipo !== F.tipo) return false;
@@ -141,7 +158,8 @@ function setPeriodo(p) {
 }
 
 function buildFilters() {
-  $('fMon').innerHTML = MONEDAS.map(m => `<button class="chip${F.mon === m.k ? ' on' : ''}" data-k="${m.k}">${m.l}</button>`).join('');
+  $('fMon').innerHTML = MONEDAS.map(m => `<button class="chip${F.mons.includes(m.k) ? ' on' : ''}" data-k="${m.k}">${m.l}</button>`).join('') +
+    `<button class="chip" data-k="USD" title="Las 3 monedas dólar juntas">Todas USD</button>`;
   $('fSeg').innerHTML = `<option value="ALL">Todos</option>` + SEGS.map(s => `<option${F.seg === s.k ? ' selected' : ''}>${s.k}</option>`).join('');
   $('fCat').innerHTML = `<option value="ALL">Todas</option>` + CATS.map(c => `<option value="${c.k}"${F.cat === c.k ? ' selected' : ''}>${c.k}</option>`).join('');
   $('fTipo').innerHTML = `<option value="ALL">Todos</option>` + TIPOS.map(t => `<option${F.tipo === t ? ' selected' : ''}>${t}</option>`).join('');
@@ -150,6 +168,7 @@ function buildFilters() {
   $('fDesde').value = F.desde; $('fHasta').value = F.hasta;
   $('fDesde').min = $('fHasta').min = DATES[0] || ''; $('fDesde').max = $('fHasta').max = DATES[DATES.length - 1] || '';
   const act = [];
+  if (monMix()) act.push(`<span class="chip warn">⚠ Mezclás pesos y dólares: tasas y montos no son comparables</span>`);
   if (F.tramo) act.push(`<button class="chip" data-clear="tramo">Tramo ${F.tramo} d ✕</button>`);
   if (F.seg !== 'ALL') act.push(`<button class="chip" data-clear="seg">${F.seg} ✕</button>`);
   if (F.cat !== 'ALL') act.push(`<button class="chip" data-clear="cat">${F.cat} ✕</button>`);
@@ -162,7 +181,16 @@ function buildFilters() {
 }
 
 function wireFilters() {
-  $('fMon').onclick = e => { const b = e.target.closest('[data-k]'); if (b) { F.mon = b.dataset.k; render(); } };
+  $('fMon').onclick = e => {
+    const b = e.target.closest('[data-k]'); if (!b) return;
+    const k = b.dataset.k;
+    if (k === 'USD') F.mons = ['DOL', 'U$D', 'U$S'];
+    else {                                                    // clic = agrega/quita esa moneda (siempre queda al menos una)
+      F.mons = F.mons.includes(k) ? F.mons.filter(x => x !== k) : [...F.mons, k];
+      if (!F.mons.length) F.mons = [k];
+    }
+    render();
+  };
   $('fSeg').onchange = e => { F.seg = e.target.value; render(); };
   $('fCat').onchange = e => { F.cat = e.target.value; render(); };
   $('fTipo').onchange = e => { F.tipo = e.target.value; render(); };
@@ -309,13 +337,13 @@ function renderMercado() {
 
   // Curva por tramo
   const band = TRAMOS.map(t => { const a = P.filter(o => o.tramo === t); return a.length >= 3 ? [wq(a, .25), wq(a, .75)] : [null, null]; });
-  legend('mCurveLeg', [...SEGS.map(s => ({ l: s.k, c: s.c, cls: 'ln' })), { l: 'Rango p25–p75 del mercado', c: 'rgba(255,255,255,.12)', cls: 'band' }]);
+  serToggles('mCurveLeg', [{ l: 'Rango p25–p75 del mercado', c: 'rgba(255,255,255,.12)', cls: 'band' }]);
   mkChart('mCurve', {
     type: 'line',
     data: { labels: TRAMOS.map(t => t + ' d'), datasets: [
       { label: 'p25', data: band.map(b => b[0]), borderWidth: 0, pointRadius: 0, fill: false, spanGaps: true },
       { label: 'p75', data: band.map(b => b[1]), borderWidth: 0, pointRadius: 0, backgroundColor: 'rgba(255,255,255,.07)', fill: '-1', spanGaps: true },
-      ...SEGS.map(s => ({ label: s.k, data: TRAMOS.map(t => { const a = P.filter(o => o.seg === s.k && o.tramo === t); return a.length ? wavg(a) : null; }), borderColor: s.c, backgroundColor: s.c, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBorderColor: '#151920', pointBorderWidth: 2, tension: .3, spanGaps: true })),
+      ...SER().map(s => ({ label: s.l, data: TRAMOS.map(t => { const a = P.filter(o => s.f(o) && o.tramo === t); return a.length ? wavg(a) : null; }), borderColor: s.c, backgroundColor: s.c, borderWidth: s.k === 'Total' ? 2.5 : 2, borderDash: s.k === 'Total' ? [6, 3] : [], pointRadius: 4, pointHoverRadius: 6, pointBorderColor: '#151920', pointBorderWidth: 2, tension: .3, spanGaps: true })),
     ] },
     options: {
       interaction: { mode: 'index', intersect: false },
@@ -512,7 +540,7 @@ function renderEmisores() {
   $('eMain').value = EMP.main || '';
   $('eCmp').innerHTML = EMP.cmp.map((n, i) => `<button class="chip" data-rm="${i}"><i style="background:${ENT_C[i + 1]}"></i>${esc(n.length > 30 ? n.slice(0, 29) + '…' : n)} <b>✕</b></button>`).join('');
   if (!EMP.main) { $('eBody').innerHTML = '<div class="card empty">Elegí un responsable para ver su perfil, o hacé clic en uno del ranking de Mercado.</div>'; return; }
-  const per = HIST.filter(o => o.mon === F.mon && inPer(o) && (F.calif === 'ALL' || o.calif === F.calif));
+  const per = HIST.filter(o => F.mons.includes(o.mon) && inPer(o) && (F.calif === 'ALL' || o.calif === F.calif));
   const mktR = rated(per);
   const refMap = new Map([...groupBy(mktR, o => o.tramo + '|' + o.seg).entries()].map(([k, a]) => [k, wavg(a)]));
   const ents = [EMP.main, ...EMP.cmp].map((n, i) => {
@@ -522,7 +550,7 @@ function renderEmisores() {
     return { n, c: ENT_C[i], a, r, m: sum(a), t: wavg(r), p: wavg(r, 'ppv'), spr, cat, cuit: a[0]?.cuit };
   });
   const E = ents[0];
-  if (!E.a.length) { $('eBody').innerHTML = `<div class="card empty">${esc(EMP.main)} no tiene operaciones en ${MONEDAS.find(m => m.k === F.mon).l} entre ${fmtD(F.desde)} y ${fmtD(F.hasta)}. Probá ampliar el período o cambiar la moneda.</div>`; return; }
+  if (!E.a.length) { $('eBody').innerHTML = `<div class="card empty">${esc(EMP.main)} no tiene operaciones en ${MONEDAS.filter(m => F.mons.includes(m.k)).map(m => m.l).join(' + ')} entre ${fmtD(F.desde)} y ${fmtD(F.hasta)}. Probá ampliar el período o cambiar la moneda.</div>`; return; }
 
   $('eBody').innerHTML = `
     <div class="kpis" id="eKpis"></div>
@@ -543,9 +571,10 @@ function renderEmisores() {
     { l: 'TNA ponderada', v: fmtN(E.t, 2) + '<small>%</small>', d: `mercado ${fmtN(wavg(mktR), 2)}%` },
     { l: 'Spread vs. mercado', v: isFinite(E.spr) ? (E.spr >= 0 ? '+' : '') + fmtN(E.spr, 0) + '<small>pb</small>' : '—', d: 'mismo tramo y segmento' },
     { l: 'Plazo prom. pond.', v: fmtN(E.p, 0) + '<small>días</small>', d: `mercado ${fmtN(wavg(mktR, 'ppv'), 0)} d` },
-    { l: 'CUIT', v: `<span style="font-size:18px">${esc(E.cuit || '—')}</span>`, d: `${fmtD(F.desde)} → ${fmtD(F.hasta)}` },
+    { l: 'CUIT', v: `<span style="font-size:18px">${esc(E.cuit || '—')}</span>`, d: `<button class="ico" id="eToSpread">Ver spread histórico →</button>` },
   ];
   $('eKpis').innerHTML = K.map(k => `<div class="kpi${k.hero ? ' hero' : ''}"><div class="kl">${k.l}</div><div class="kv">${k.v}</div><div class="kd">${k.d}</div></div>`).join('');
+  $('eToSpread').onclick = () => { const seg = [...groupBy(E.a, o => o.seg).entries()].sort((x, y) => sum(y[1]) - sum(x[1]))[0][0]; SPR.a = 'emp:' + E.n; SPR.b = 'seg:' + seg; SPR.tramo = true; setView('curvas'); setTimeout(() => $('spTitle').scrollIntoView({ behavior: 'smooth' }), 50); };
 
   legend('eCurveLeg', [{ l: 'Mercado', c: 'transparent', cls: 'dash' }, ...ents.map(e => ({ l: e.n, c: e.c, cls: 'ln' }))]);
   mkChart('eCurve', { type: 'line', data: { labels: TRAMOS.map(t => t + ' d'), datasets: [
@@ -607,12 +636,15 @@ function renderCurvas() {
   const xMax = xs.length ? Math.max(60, Math.ceil(xs[Math.floor(xs.length * .98)] * 1.08 / 30) * 30) : 365;
   const MAXP = 6000, stride = Math.max(1, Math.ceil(P.length / MAXP));
   const maxM = Math.max(1, ...P.map(o => o.monto)), rad = m => 2 + 7 * Math.sqrt(m / maxM);
-  const fits = Object.fromEntries(SEGS.map(s => [s.k, fitLog(P.filter(o => o.seg === s.k))]));
+  const ser = SER();
+  const fits = Object.fromEntries(ser.map(s => [s.k, fitLog(P.filter(s.f))]));
   $('cScatterNote').textContent = `${fmtN(P.length)} ops${stride > 1 ? ` · se muestra 1 de cada ${stride}` : ''}`;
-  legend('cScatterLeg', SEGS.map(s => ({ l: s.k, c: s.c, cls: 'cir' })));
+  serToggles('cScatterLeg');
+  const onlyTotal = !ser.some(s => s.k !== 'Total');
+  const ptsSegs = onlyTotal ? [{ k: 'Total', l: 'Todas', c: '#8a929c', f: () => true }] : ser.filter(s => s.k !== 'Total');
   const ds = [
-    ...SEGS.filter(s => fits[s.k]).map(s => { const f = fits[s.k], pts = []; for (let x = Math.max(1, f.lo); x <= Math.min(xMax, f.hi * 1.15); x += Math.max(1, xMax / 80)) pts.push({ x, y: f.f(x) }); return { type: 'line', label: s.k + ' (ajuste)', data: pts, borderColor: s.c, borderWidth: 2.5, pointRadius: 0, tension: 0 }; }),
-    ...SEGS.map(s => { const a = P.filter((o, i) => o.seg === s.k && o.ppv <= xMax && i % stride === 0); return { label: s.k, data: a.map(o => ({ x: o.ppv, y: o.tna, o })), backgroundColor: s.c + '66', borderColor: s.c + 'aa', borderWidth: 1, pointRadius: a.map(o => rad(o.monto)) }; }),
+    ...ser.filter(s => fits[s.k]).map(s => { const f = fits[s.k], pts = []; for (let x = Math.max(1, f.lo); x <= Math.min(xMax, f.hi * 1.15); x += Math.max(1, xMax / 80)) pts.push({ x, y: f.f(x) }); return { type: 'line', label: s.l + ' (ajuste)', data: pts, borderColor: s.c, borderWidth: 2.5, borderDash: s.k === 'Total' ? [6, 3] : [], pointRadius: 0, tension: 0 }; }),
+    ...ptsSegs.map(s => { const a = P.filter((o, i) => s.f(o) && o.ppv <= xMax && i % stride === 0); return { label: s.l, data: a.map(o => ({ x: o.ppv, y: o.tna, o })), backgroundColor: s.c + '66', borderColor: s.c + 'aa', borderWidth: 1, pointRadius: a.map(o => rad(o.monto)) }; }),
   ];
   mkChart('cScatter', { type: 'scatter', data: { datasets: ds }, options: {
     scales: { x: { ...AXX, min: 0, max: xMax, title: { display: true, text: 'plazo (días)' } }, y: { ...AX, ...yRange(P), ticks: { callback: v => v + '%' } } },
@@ -621,24 +653,85 @@ function renderCurvas() {
 
   const PL = [30, 60, 90, 180, 365];
   $('cImpl').innerHTML = `<thead><tr><th class="l">Segmento</th>${PL.map(p => `<th>${p} d</th>`).join('')}<th>n</th></tr></thead><tbody>` +
-    SEGS.map(s => { const f = fits[s.k]; return `<tr><td class="l nm"><span class="sw" style="background:${s.c}"></span>${s.k}</td>${PL.map(p => `<td>${f && p >= f.lo * .8 && p <= f.hi * 1.2 ? fmtN(f.f(p), 2) + '%' : '<span style="color:var(--muted)">—</span>'}</td>`).join('')}<td>${f ? fmtN(f.n) : 0}</td></tr>`; }).join('') + '</tbody>';
+    ser.map(s => { const f = fits[s.k]; return `<tr><td class="l nm"><span class="sw" style="background:${s.c}"></span>${s.l}</td>${PL.map(p => `<td>${f && p >= f.lo * .8 && p <= f.hi * 1.2 ? fmtN(f.f(p), 2) + '%' : '<span style="color:var(--muted)">—</span>'}</td>`).join('')}<td>${f ? fmtN(f.n) : 0}</td></tr>`; }).join('') + '</tbody>';
 
   // Evolución diaria
   const days = [...new Set(P.map(o => o.date))].sort();
-  const bd = groupBy(P, o => o.date + '|' + o.seg);
-  legend('cEvoLeg', SEGS.map(s => ({ l: s.k, c: s.c, cls: 'ln' })));
-  mkChart('cEvo', { type: 'line', data: { labels: days.map(fmtDs), datasets: SEGS.map(s => ({ label: s.k, data: days.map(d => { const a = bd.get(d + '|' + s.k); return a ? wavg(a) : null; }), borderColor: s.c, backgroundColor: s.c, borderWidth: 2, pointRadius: days.length > 40 ? 0 : 3, tension: .25, spanGaps: true })) },
-    options: { interaction: { mode: 'index', intersect: false }, scales: { x: { ...AXX, ticks: { maxTicksLimit: 12 } }, y: { ...AX, ticks: { callback: v => v + '%' } } }, plugins: { tooltip: { callbacks: { label: i => ` ${i.dataset.label}: ${fmtN(i.parsed.y, 2)}%` } } } } });
-  const sp = days.map(d => { const ng = bd.get(d + '|No Garantizado'), av = bd.get(d + '|Avalado'); return ng && av ? (wavg(ng) - wavg(av)) * 100 : null; });
-  mkChart('cSpread', { type: 'bar', data: { labels: days.map(fmtDs), datasets: [{ label: 'Spread', data: sp, backgroundColor: sp.map(v => v >= 0 ? 'rgba(166,230,53,.75)' : 'rgba(57,135,229,.75)'), borderRadius: 3, barPercentage: .8 }] },
-    options: { scales: { x: { ...AXX, ticks: { maxTicksLimit: 12 } }, y: { ...AX, ticks: { callback: v => (v > 0 ? '+' : '') + v } } }, plugins: { tooltip: { callbacks: { label: i => ` NG − Avalado: ${i.parsed.y >= 0 ? '+' : ''}${fmtN(i.parsed.y, 0)} pb` } } } } });
+  const byD = groupBy(P, o => o.date);
+  serToggles('cEvoLeg');
+  mkChart('cEvo', { type: 'line', data: { labels: days.map(fmtDs), datasets: ser.map(s => ({ label: s.l, data: days.map(d => { const a = (byD.get(d) || []).filter(s.f); return a.length ? wavg(a) : null; }), borderColor: s.c, backgroundColor: s.c, borderWidth: 2, borderDash: s.k === 'Total' ? [6, 3] : [], pointRadius: days.length > 40 ? 0 : 3, tension: .25, spanGaps: true })) },
+    options: { interaction: { mode: 'index', intersect: false }, scales: { x: { ...AXX, ticks: { maxTicksLimit: 14 } }, y: { ...AX, ticks: { callback: v => v + '%' } } }, plugins: { tooltip: { callbacks: { label: i => ` ${i.dataset.label}: ${fmtN(i.parsed.y, 2)}%` } } } } });
+
+  renderSpread();
+}
+
+// ── Spread histórico configurable ─────────────────────────────────────────────
+const SPR = { a: 'seg:No Garantizado', b: 'seg:Avalado', tramo: true };
+function legOptions() {
+  const o = [['mkt:', 'Mercado total']];
+  SEGS.forEach(s => o.push(['seg:' + s.k, 'Segmento · ' + s.k]));
+  CATS.forEach(c => o.push(['cat:' + c.k, 'Categoría · ' + c.k]));
+  const m = new Map(); HIST.forEach(x => m.set(x.emp, (m.get(x.emp) || 0) + x.monto));
+  [...m.entries()].sort((a, b) => b[1] - a[1]).forEach(([n]) => o.push(['emp:' + n, 'Responsable · ' + n]));
+  return o;
+}
+let LEG_OPTS = null;
+const legLabel = k => (LEG_OPTS.find(o => o[0] === k) || [k, k])[1];
+const legFn = k => { const [t, v] = [k.slice(0, k.indexOf(':')), k.slice(k.indexOf(':') + 1)]; return t === 'seg' ? o => o.seg === v : t === 'cat' ? o => o.cat === v : t === 'emp' ? o => o.emp === v : () => true; };
+function legFromInput(txt) {
+  txt = txt.trim(); if (!txt) return null;
+  const hit = LEG_OPTS.find(o => o[1] === txt) || LEG_OPTS.find(o => o[1].toLowerCase().includes(txt.toLowerCase()));
+  return hit ? hit[0] : null;
+}
+function renderSpread() {
+  if (!LEG_OPTS) { LEG_OPTS = legOptions(); $('spList').innerHTML = LEG_OPTS.map(o => `<option value="${esc(o[1])}">`).join(''); }
+  $('spA').value = legLabel(SPR.a); $('spB').value = legLabel(SPR.b); $('spTramo').checked = SPR.tramo;
+  const base = rated(HIST.filter(o => F.mons.includes(o.mon) && inPer(o) && (F.calif === 'ALL' || o.calif === F.calif) && (F.tipo === 'ALL' || o.tipo === F.tipo)));
+  const fa = legFn(SPR.a), fb = legFn(SPR.b);
+  const byD = groupBy(base, o => o.date), days = [...byD.keys()].sort();
+  const rows = days.map(d => {
+    const A = byD.get(d).filter(fa), B = byD.get(d).filter(fb);
+    if (!A.length || !B.length) return { d, sp: null, ta: A.length ? wavg(A) : null, tb: B.length ? wavg(B) : null, na: A.length };
+    let sp;
+    if (SPR.tramo) {
+      let W = 0, X = 0;
+      for (const t of TRAMOS) { const a = A.filter(o => o.tramo === t), b = B.filter(o => o.tramo === t); if (a.length && b.length) { const w = sum(a); W += w; X += w * (wavg(a) - wavg(b)); } }
+      sp = W ? X / W * 100 : null;
+    } else sp = (wavg(A) - wavg(B)) * 100;
+    return { d, sp, ta: wavg(A), tb: wavg(B), na: A.length };
+  });
+  const vals = rows.filter(r => r.sp != null);
+  const ma = rows.map((r, i) => { const w = rows.slice(Math.max(0, i - 4), i + 1).filter(x => x.sp != null); return w.length ? w.reduce((s, x) => s + x.sp, 0) / w.length : null; });
+  const fmtPb = v => v == null || !isFinite(v) ? '—' : (v >= 0 ? '+' : '') + fmtN(v, 0) + '<small>pb</small>';
+  const last = vals[vals.length - 1];
+  const St = [
+    { l: 'Promedio', v: vals.length ? fmtPb(vals.reduce((s, r) => s + r.sp, 0) / vals.length) : '—', d: `${vals.length} de ${days.length} días con dato`, hero: 1 },
+    { l: 'Último', v: last ? fmtPb(last.sp) : '—', d: last ? fmtD(last.d) : '' },
+    { l: 'Mínimo', v: vals.length ? fmtPb(Math.min(...vals.map(r => r.sp))) : '—', d: vals.length ? fmtD(vals.reduce((m, r) => r.sp < m.sp ? r : m).d) : '' },
+    { l: 'Máximo', v: vals.length ? fmtPb(Math.max(...vals.map(r => r.sp))) : '—', d: vals.length ? fmtD(vals.reduce((m, r) => r.sp > m.sp ? r : m).d) : '' },
+    { l: 'TNA A / B (período)', v: `<span style="font-size:20px">${fmtN(wavg(base.filter(fa)), 2)}% / ${fmtN(wavg(base.filter(fb)), 2)}%</span>`, d: 'ponderadas por monto' },
+  ];
+  $('spStats').innerHTML = St.map(k => `<div class="kpi${k.hero ? ' hero' : ''}"><div class="kl">${k.l}</div><div class="kv">${k.v}</div><div class="kd">${k.d}</div></div>`).join('');
+  $('spTitle').textContent = `Spread histórico · ${legLabel(SPR.a).replace(/^.*· /, '')} − ${legLabel(SPR.b).replace(/^.*· /, '')}`;
+  mkChart('cSpread', { type: 'bar', data: { labels: rows.map(r => fmtDs(r.d)), datasets: [
+    { type: 'line', label: 'Promedio móvil 5 ruedas', data: ma, borderColor: '#e9ecef', borderWidth: 2, borderDash: [5, 3], pointRadius: 0, tension: .3, spanGaps: true },
+    { label: 'Spread', data: rows.map(r => r.sp), backgroundColor: rows.map(r => r.sp >= 0 ? 'rgba(166,230,53,.75)' : 'rgba(57,135,229,.75)'), borderRadius: 3, barPercentage: .85 },
+  ] }, options: { interaction: { mode: 'index', intersect: false }, scales: { x: { ...AXX, ticks: { maxTicksLimit: 16 } }, y: { ...AX, ticks: { callback: v => (v > 0 ? '+' : '') + v }, grid: { color: c => c.tick.value === 0 ? 'rgba(255,255,255,.3)' : 'rgba(255,255,255,.05)' } } },
+    plugins: { tooltip: { callbacks: { title: i => fmtD(rows[i[0].dataIndex].d), label: i => i.datasetIndex === 1 ? ` Spread: ${i.parsed.y >= 0 ? '+' : ''}${fmtN(i.parsed.y, 0)} pb` : ` Prom. móvil 5: ${fmtN(i.parsed.y, 0)} pb`, afterBody: i => { const r = rows[i[0].dataIndex]; return `\nA: ${fmtN(r.ta, 2)}% (${r.na} ops)\nB: ${fmtN(r.tb, 2)}%`; } } } } } });
+}
+function wireSpread() {
+  const set = (k, el) => { const v = legFromInput(el.value); if (v) { SPR[k] = v; renderSpread(); } else el.value = legLabel(SPR[k]); };
+  $('spA').addEventListener('change', e => set('a', e.target));
+  $('spB').addEventListener('change', e => set('b', e.target));
+  $('spSwap').onclick = () => { [SPR.a, SPR.b] = [SPR.b, SPR.a]; renderSpread(); };
+  $('spTramo').onchange = e => { SPR.tramo = e.target.checked; renderSpread(); };
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   if (typeof Chart === 'undefined') { overlay('No se pudo cargar la librería de gráficos (Chart.js). Revisá la conexión.', true); return; }
   chartDefaults();
-  wireFilters(); wireEmisores();
+  wireFilters(); wireEmisores(); wireSpread();
   $('tabs').onclick = e => { const t = e.target.closest('[data-v]'); if (t) setView(t.dataset.v); };
   $('mHmMode').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { hmMode = b.dataset.m; render(); } };
   $('vEst').onclick = e => { const b = e.target.closest('[data-e]'); if (b) { vEst = b.dataset.e; renderVivo(); } };
