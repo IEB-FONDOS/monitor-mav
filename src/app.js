@@ -198,7 +198,7 @@ function chartDefaults() {
   Chart.defaults.font.family = "'JetBrains Mono', ui-monospace, monospace";
   Chart.defaults.font.size = 11;
   Chart.defaults.maintainAspectRatio = false;
-  Chart.defaults.animation = { duration: 250 };
+  Chart.defaults.animation = false;           // sin animaciones: se dibuja al instante aunque el navegador frene requestAnimationFrame
   Chart.defaults.plugins.legend.display = false;
   Object.assign(Chart.defaults.plugins.tooltip, { backgroundColor: '#0b0d11', borderColor: 'rgba(255,255,255,.12)', borderWidth: 1, titleColor: '#e9ecef', bodyColor: '#aab2bd', footerColor: '#e9ecef', padding: 10, cornerRadius: 8, titleFont: { family: "'Manrope',sans-serif", weight: '700', size: 12 }, bodyFont: { family: "'JetBrains Mono',monospace", size: 11.5 }, boxPadding: 4, usePointStyle: true });
   Chart.register({ id: 'bg', beforeDraw(c) { const x = c.ctx; x.save(); x.globalCompositeOperation = 'destination-over'; x.fillStyle = '#151920'; x.fillRect(0, 0, c.width, c.height); x.restore(); } });
