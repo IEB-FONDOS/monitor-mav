@@ -12,7 +12,7 @@ Chart.defaults.plugins.tooltip.padding         = 10;
 // ── Config ────────────────────────────────────────────────────────────────────
 const SHEET_ID = '1xrJOqC7UoFQoyqFErfXFjbLfp2h13K5Tzs7YE1S9uv8';
 const GID      = '1748110732';   // pestaña "historico"
-const RT_GID   = 'COMPLETAR';    // pestaña "hoy" (el GID lo muestra MAV → Configurar)
+const RT_GID   = '1238398910';   // pestaña "hoy"
 // URL de "Publicar en la web" — sin auth, CORS ok desde GitHub Pages
 const PUB_ID   = '2PACX-1vTD0j3RWyrONWTbyyvL9JhuPpcLR6Lq0zFzegO-g7PS4CVQ4ARrNa1MCEa3gk95z_-gKMl4VbKI4_S_';
 const CSV_URLS = [
@@ -63,7 +63,7 @@ async function loadAndRender() {
   let lastErr = '';
   for (const url of CSV_URLS) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url + (url.includes('/pub?') ? '&t=' + Date.now() : ''), { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showLoading('Procesando datos…');
       rawData = parseCSV(await res.text());
@@ -71,7 +71,7 @@ async function loadAndRender() {
       initFilters(); applyFilters(); initEmpTab(); hideLoading();
       return; // éxito
     } catch(e) {
-      lastErr = e.message + (e.stack ? '<br><code style="font-size:10px;opacity:.7">' + e.stack.split('\n').slice(0,3).join('<br>') + '</code>' : '');
+      lastErr += (lastErr ? '<br>' : '') + (url.includes('/pub?') ? 'Publicado: ' : 'Export: ') + e.message;
     }
   }
   // Ambas URLs fallaron — mostrar error real
@@ -824,7 +824,7 @@ async function loadRT() {
   let lastErr = '';
   for (const url of RT_CSV_URLS) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url + (url.includes('/pub?') ? '&t=' + Date.now() : ''), { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showLoading('Procesando…');
       rtRawData = rtParseCSV(await res.text());
@@ -836,9 +836,9 @@ async function loadRT() {
         'Actualizado ' + new Date().toLocaleString('es-AR',
           {hour:'2-digit',minute:'2-digit',second:'2-digit'});
       return;
-    } catch(e) { lastErr = e.message; }
+    } catch(e) { lastErr += (lastErr ? '<br>' : '') + (url.includes('/pub?') ? 'Publicado: ' : 'Export: ') + e.message; }
   }
-  showError(`Error tiempo real: ${lastErr}`);
+  showError(`Error tiempo real:<br>${lastErr}<br><small style="opacity:.6">GID hoy: ${RT_GID}</small>`);
 }
 
 // ── RT CSV parser ─────────────────────────────────────────────────────────────
