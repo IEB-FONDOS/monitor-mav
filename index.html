@@ -84,17 +84,17 @@
   <section class="view" id="v-vivo">
     <div class="ticker" id="vTicker"></div>
     <div class="kpis" id="vKpis"></div>
-    <div class="row r-75">
+    <div class="row r-66">
       <div class="card">
         <div class="ch"><div class="ct">Curva en vivo</div><div class="tools"><span class="cs">operaciones de hoy vs. curva del día anterior</span><button class="ico" data-png="vCurve">PNG</button></div></div>
         <div class="leg" id="vCurveLeg"></div>
         <div class="chart" style="height:320px"><canvas id="vCurve"></canvas></div>
-        <div class="hint">Tamaño del punto = monto. Escala de TNA recortada a p1–p99. Línea punteada: curva de ayer por segmento (contexto). Anillo blanco = el emisor opera fuera de su propio rango habitual.</div>
+        <div class="hint">Tamaño del punto = monto. Escala de TNA recortada a p1–p99. Línea punteada: curva ajustada de la rueda anterior por segmento.</div>
       </div>
       <div class="card">
-        <div class="ch"><div class="ct">Desvíos vs. su historia</div><span class="cs" id="vOutNote"></span></div>
-        <div class="tbl-wrap" style="max-height:330px"><table id="vOut"></table></div>
-        <div class="hint">Cada operación de hoy se compara con la curva propia del emisor (últimas 20 ruedas, ajustada por plazo). Se marca si se aleja más de 2× su dispersión habitual (mínimo 2 pp). Emisores con menos de 5 operaciones en ese período no se evalúan.</div>
+        <div class="ch"><div class="ct">Resumen del día</div><div class="tools"><span class="cs" id="vResNote"></span><div class="seg" id="vResMode"><button class="on" data-m="seg">Segmento</button><button data-m="cat">Categoría</button></div><button class="ico" data-csv="vRes">CSV</button></div></div>
+        <div class="tbl-wrap"><table id="vRes"></table></div>
+        <div class="hint">Operaciones negociadas hoy. TNA y plazo ponderados por monto. TEA y TEM: se calculan para cada operación con su propio plazo y se ponderan por monto. Δ TNA: diferencia contra el mismo grupo en la rueda anterior.</div>
       </div>
     </div>
     <div class="row r-66">

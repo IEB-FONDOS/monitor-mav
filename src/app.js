@@ -58,7 +58,7 @@ let HIST = [], HOY = [], HOY_AT = null;
 let DATES = [];
 const charts = {};
 const F = { mons: ['$'], seg: 'ALL', cat: 'ALL', tipo: 'ALL', calif: 'ALL', per: '1M', desde: '', hasta: '', tramo: null };
-let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '';
+let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '', vResMode = 'seg';
 let EMP = { main: null, cmp: [], ref: 'cat' };
 let rtTimer = null;
 
@@ -80,6 +80,10 @@ const sum = a => a.reduce((s, o) => s + o.monto, 0);
 const wavg = (a, k = 'tna') => { let m = 0, x = 0; for (const o of a) { m += o.monto; x += o[k] * o.monto; } return m ? x / m : NaN; };
 const wq = (a, q) => { const s = [...a].sort((x, y) => x.tna - y.tna), M = sum(s); let acc = 0; for (const o of s) { acc += o.monto; if (acc >= q * M) return o.tna; } return NaN; };
 const tea = (tna, d) => (isFinite(tna) && d > 0) ? (Math.pow(1 + tna / 100 * d / 365, 365 / d) - 1) * 100 : NaN;
+const temOf = (tna, d) => { const e = tea(tna, d); return isFinite(e) ? (Math.pow(1 + e / 100, 30 / 365) - 1) * 100 : NaN; };
+// TEA / TEM de un grupo: cada operación con su propio plazo, ponderadas por monto
+const wTea = a => { let m = 0, x = 0; for (const o of a) { const v = tea(o.tna, o.ppv); if (isFinite(v)) { m += o.monto; x += v * o.monto; } } return m ? x / m : NaN; };
+const wTem = a => { let m = 0, x = 0; for (const o of a) { const v = temOf(o.tna, o.ppv); if (isFinite(v)) { m += o.monto; x += v * o.monto; } } return m ? x / m : NaN; };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const tipoGrp = t => /^PAGARE/i.test(t) ? 'Pagaré' : (t === 'ECHEQ' || t === 'FCE' || t === 'CPD') ? t : (t || '—');
 const isoAdd = (iso, days) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
@@ -480,8 +484,8 @@ function renderMercado() {
   }
 
   // Tabla por categoría
-  const rows = CATS.map(c => { const a = P.filter(o => o.cat === c.k); const t = wavg(a), p = wavg(a, 'ppv'); return { c, n: a.length, m: sum(a), p, t, e: tea(t, p) }; }).filter(r => r.n);
-  const T = { n: P.length, m: M, p: wavg(P, 'ppv'), t: wavg(P) }; T.e = tea(T.t, T.p);
+  const rows = CATS.map(c => { const a = P.filter(o => o.cat === c.k); const t = wavg(a), p = wavg(a, 'ppv'); return { c, n: a.length, m: sum(a), p, t, e: wTea(a) }; }).filter(r => r.n);
+  const T = { n: P.length, m: M, p: wavg(P, 'ppv'), t: wavg(P), e: wTea(P) };
   $('mTbl').innerHTML = `<thead><tr><th class="l">Categoría</th><th>Ops</th><th>Monto</th><th>Plazo</th><th>TNA</th><th>TEA</th></tr></thead><tbody>` +
     rows.map(r => `<tr><td class="l nm"><span class="sw" style="background:${r.c.c}"></span>${r.c.k}</td><td>${fmtN(r.n)}</td><td>${fmtMonto(r.m)}</td><td>${fmtN(r.p, 0)} d</td><td>${fmtN(r.t, 2)}%</td><td>${fmtN(r.e, 2)}%</td></tr>`).join('') +
     `<tr class="tot"><td class="l nm">Total</td><td>${fmtN(T.n)}</td><td>${fmtMonto(T.m)}</td><td>${fmtN(T.p, 0)} d</td><td>${fmtN(T.t, 2)}%</td><td>${fmtN(T.e, 2)}%</td></tr></tbody>`;
@@ -558,40 +562,31 @@ function renderVivo() {
   // Curva en vivo vs ayer
   const fits = Object.fromEntries(SEGS.map(s => [s.k, fitLog(ayer.filter(o => o.seg === s.k))]));
   const fitAll = fitLog(ayer);
-  // Referencia por emisor: su propia curva de las últimas 20 ruedas (mismas monedas), con su dispersión habitual
-  const histD = DATES.filter(d => d < today).slice(-20), d0 = histD[0] || today;
-  const own = groupBy(rated(HIST.filter(o => o.date >= d0 && o.date < today && F.mons.includes(o.mon))), o => o.emp);
-  const prof = new Map();
-  const profile = emp => {
-    if (prof.has(emp)) return prof.get(emp);
-    const a = emp === '(sin nombre)' ? [] : (own.get(emp) || []); let p = null;
-    if (a.length >= 5) {
-      const f = fitLog(a);
-      const fx = f ? f.f : (() => { const m = wavg(a); return () => m; })();
-      const sd = Math.sqrt(wavg(a.map(o => ({ tna: (o.tna - fx(o.ppv)) ** 2, monto: o.monto }))));
-      p = { f: fx, sd, n: a.length, thr: Math.max(2, 2 * sd) };
-    }
-    prof.set(emp, p); return p;
-  };
-  neg.forEach(o => { const p = profile(o.emp); o._ref = p ? p.f(o.ppv) : NaN; o._dev = p ? o.tna - o._ref : NaN; o._thr = p ? p.thr : NaN; o._n = p ? p.n : 0; o._out = p ? Math.abs(o._dev) > p.thr : false; });
   const xs = neg.map(o => o.ppv).sort((a, b) => a - b), xMax = Math.max(60, xs.length ? xs[Math.floor(xs.length * .98)] * 1.1 : 200);
   const maxM = Math.max(1, ...neg.map(o => o.monto));
   const rad = m => 3 + 9 * Math.sqrt(m / maxM);
-  const dsPts = SEGS.map(s => { const a = neg.filter(o => o.seg === s.k && o.ppv <= xMax); return { label: s.k, data: a.map(o => ({ x: o.ppv, y: o.tna, o })), backgroundColor: s.c + 'cc', borderColor: a.map(o => o._out ? '#e9ecef' : '#151920'), borderWidth: a.map(o => o._out ? 2 : 1), pointRadius: a.map(o => rad(o.monto)), pointHoverRadius: a.map(o => rad(o.monto) + 2) }; });
+  const dsPts = SEGS.map(s => { const a = neg.filter(o => o.seg === s.k && o.ppv <= xMax); return { label: s.k, data: a.map(o => ({ x: o.ppv, y: o.tna, o })), backgroundColor: s.c + 'cc', borderColor: '#151920', borderWidth: 1, pointRadius: a.map(o => rad(o.monto)), pointHoverRadius: a.map(o => rad(o.monto) + 2) }; });
   const dsFit = SEGS.filter(s => fits[s.k]).map(s => { const f = fits[s.k]; const pts = []; for (let x = Math.max(1, f.lo); x <= Math.min(xMax, f.hi * 1.2); x += Math.max(1, xMax / 60)) pts.push({ x, y: f.f(x) }); return { type: 'line', label: s.k + ' (ayer)', data: pts, borderColor: s.c, borderDash: [5, 4], borderWidth: 2, pointRadius: 0, tension: 0 }; });
   legend('vCurveLeg', [...SEGS.map(s => ({ l: s.k, c: s.c, cls: 'cir' })), { l: ayerD ? `curva ajustada ${fmtD(ayerD)}` : 'sin curva de ayer', c: 'transparent', cls: 'dash' }]);
   mkChart('vCurve', {
     type: 'scatter', data: { datasets: [...dsFit, ...dsPts] },
     options: {
       scales: { x: { ...AXX, min: 0, max: Math.ceil(xMax / 30) * 30, title: { display: true, text: 'plazo (días)' } }, y: { ...AX, ...yRange(neg), ticks: { callback: v => v + '%' } } },
-      plugins: { tooltip: { filter: i => i.raw && i.raw.o, callbacks: { title: i => i[0].raw.o.emp, label: i => { const o = i.raw.o; return [` ${o.seg} · ${o.tipo} · ${o.ppv} d`, ` TNA ${fmtN(o.tna, 2)}% · ${fmtMonto(o.monto)}`, isFinite(o._dev) ? ` vs su historia: ${o._dev >= 0 ? '+' : ''}${fmtN(o._dev * 100, 0)} pb (umbral ±${fmtN(o._thr * 100, 0)})` : ' sin historia suficiente (20 ruedas)']; } } } },
+      plugins: { tooltip: { filter: i => i.raw && i.raw.o, callbacks: { title: i => i[0].raw.o.emp, label: i => { const o = i.raw.o; return [` ${o.seg} · ${o.tipo} · ${o.ppv} d`, ` TNA ${fmtN(o.tna, 2)}% · ${fmtMonto(o.monto)}`]; } } } },
     },
   });
-  const outs = neg.filter(o => o._out).sort((a, b) => Math.abs(b._dev) / b._thr - Math.abs(a._dev) / a._thr);
-  const sinHist = new Set(neg.filter(o => !o._n && o.emp !== '(sin nombre)').map(o => o.emp)).size, conHist = new Set(neg.filter(o => o._n).map(o => o.emp)).size;
-  $('vOutNote').textContent = `${conHist} emisores evaluados · ${sinHist} sin historia suficiente`;
-  $('vOut').innerHTML = outs.length ? `<thead><tr><th class="l">Responsable</th><th>Plazo</th><th>TNA</th><th>Su ref.</th><th>Desvío</th><th>Umbral</th></tr></thead><tbody>` + outs.map(o => `<tr><td class="l nm" title="${esc(o.emp)} · ${o._n} ops en 20 ruedas"><span class="sw" style="background:${SEG_C[o.seg]}"></span>${esc(o.emp)}</td><td>${o.ppv} d</td><td>${fmtN(o.tna, 2)}%</td><td style="color:var(--text-2)">${fmtN(o._ref, 2)}%</td><td style="color:${o._dev > 0 ? 'var(--up)' : 'var(--down)'}">${o._dev > 0 ? '+' : ''}${fmtN(o._dev * 100, 0)} pb</td><td style="color:var(--muted)">±${fmtN(o._thr * 100, 0)}</td></tr>`).join('') + '</tbody>'
-    : `<tbody><tr><td class="l" style="color:var(--muted);font-family:var(--sans);white-space:normal">Ningún emisor está operando fuera de su rango habitual.</td></tr></tbody>`;
+  // Resumen del día por segmento / categoría
+  document.querySelectorAll('#vResMode button').forEach(b => b.classList.toggle('on', b.dataset.m === vResMode));
+  const grp = vResMode === 'cat' ? CATS.map(c => ({ k: c.k, l: c.k, c: c.c, f: o => o.cat === c.k })) : SEGS.map(s => ({ k: s.k, l: s.k, c: s.c, f: o => o.seg === s.k }));
+  const Mt = sum(neg);
+  const line = (l, c, a, b, cls = '') => {
+    const t = wavg(a), p = wavg(a, 'ppv'), tb = b.length ? wavg(b) : NaN, dl = (t - tb) * 100;
+    return `<tr class="${cls}"><td class="l nm">${c ? `<span class="sw" style="background:${c}"></span>` : ''}${l}</td><td>${fmtN(a.length)}</td><td>${fmtMonto(sum(a))}<span style="color:var(--muted)"> · ${fmtN(Mt ? sum(a) / Mt * 100 : 0, 0)}%</span></td><td>${fmtN(p, 0)} d</td><td>${fmtN(t, 2)}%</td><td>${fmtN(wTem(a), 2)}%</td><td>${fmtN(wTea(a), 2)}%</td><td style="color:${!isFinite(dl) ? 'var(--muted)' : dl > 0 ? 'var(--up)' : dl < 0 ? 'var(--down)' : 'inherit'}">${isFinite(dl) ? (dl > 0 ? '+' : '') + fmtN(dl, 0) + ' pb' : '—'}</td></tr>`;
+  };
+  const rowsR = grp.map(g => ({ g, a: neg.filter(g.f), b: ayer.filter(g.f) })).filter(r => r.a.length);
+  $('vResNote').textContent = ayerD ? `Δ vs. ${fmtD(ayerD)}` : '';
+  $('vRes').innerHTML = `<thead><tr><th class="l">${vResMode === 'cat' ? 'Categoría' : 'Segmento'}</th><th>Ops</th><th>Monto</th><th>Plazo</th><th>TNA</th><th>TEM</th><th>TEA</th><th>Δ TNA</th></tr></thead><tbody>` +
+    (rowsR.length ? rowsR.map(r => line(r.g.l, r.g.c, r.a, r.b)).join('') + line('Total', '', neg, ayer, 'tot') : `<tr><td class="l" colspan="8" style="color:var(--muted)">Todavía no hay operaciones negociadas hoy.</td></tr>`) + '</tbody>';
 
   // Intradía
   mkChart('vAcum', { type: 'line', data: { labels: HRS.map(h => h + 'h'), datasets: [{ label: 'Monto acumulado', data: cum.map(a => sum(a) / 1e6), borderColor: '#A6E635', backgroundColor: 'rgba(166,230,53,.12)', fill: true, borderWidth: 2, pointRadius: 3, tension: .3 }] },
@@ -821,6 +816,7 @@ function init() {
   $('btnXlsx').onclick = exportXlsx;
   $('tabs').onclick = e => { const t = e.target.closest('[data-v]'); if (t) setView(t.dataset.v); };
   $('mHmMode').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { hmMode = b.dataset.m; render(); } };
+  $('vResMode').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { vResMode = b.dataset.m; renderVivo(); } };
   $('vEst').onclick = e => { const b = e.target.closest('[data-e]'); if (b) { vEst = b.dataset.e; renderVivo(); } };
   $('vSearch').oninput = e => { vSearch = e.target.value; renderVivo(); };
   $('btnReload').onclick = () => { if (view === 'vivo') loadHoy(); else loadHist(); };
