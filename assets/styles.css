@@ -146,6 +146,10 @@ th:first-child,td:first-child{padding-left:0}th:last-child,td:last-child{padding
 td.l,th.l{text-align:left}
 td.nm{font-family:var(--sans);font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis}
 td .sw{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:8px;vertical-align:0}
+tr.sub td{font-size:11.5px;color:var(--text-2);padding-top:6px;padding-bottom:6px;background:rgba(255,255,255,.015)}
+tr.sub td:first-child{padding-left:30px;font-family:var(--mono);font-weight:500}
+.car{background:none;border:0;color:var(--muted);cursor:pointer;font-size:11px;width:16px;margin-right:4px;padding:0}
+.car:hover{color:var(--accent)}
 tr.tot td{color:var(--accent);font-weight:600;border-bottom:0}
 tbody tr:hover td{background:rgba(255,255,255,.02)}
 .st{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:4px;font-family:var(--sans)}

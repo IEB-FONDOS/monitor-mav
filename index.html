@@ -92,9 +92,10 @@
         <div class="hint">Tamaño del punto = monto. Escala de TNA recortada a p1–p99. Línea punteada: curva ajustada de la rueda anterior por segmento.</div>
       </div>
       <div class="card">
-        <div class="ch"><div class="ct">Resumen del día</div><div class="tools"><span class="cs" id="vResNote"></span><div class="seg" id="vResMode"><button class="on" data-m="seg">Segmento</button><button data-m="cat">Categoría</button></div><button class="ico" data-csv="vRes">CSV</button></div></div>
+        <div class="ch"><div class="ct">Resumen del día</div><div class="tools"><div class="seg" id="vResMode"><button class="on" data-m="seg">Segmento</button><button data-m="cat">Categoría</button></div><button class="ico" data-csv="vRes">CSV</button></div></div>
+        <div class="ch" style="margin-top:-4px"><button class="ico" id="vOpenAll">▸ Abrir tramos</button><div class="tools"><span class="cs" id="vResNote"></span><div class="seg" id="vRefSel"><button data-r="1">Ayer</button><button class="on" data-r="5">5 ruedas</button><button data-r="20">20 ruedas</button></div></div></div>
         <div class="tbl-wrap"><table id="vRes"></table></div>
-        <div class="hint">Operaciones negociadas hoy. TNA y plazo ponderados por monto. TEA y TEM: se calculan para cada operación con su propio plazo y se ponderan por monto. Δ TNA: diferencia contra el mismo grupo en la rueda anterior.</div>
+        <div class="hint">Operaciones negociadas hoy. TNA y plazo ponderados por monto. TEA y TEM: se calculan para cada operación con su propio plazo y se ponderan por monto. Δ TNA: diferencia contra el mismo grupo (y tramo, en las filas abiertas) en el período de referencia. <span id="vResFoot"></span></div>
       </div>
     </div>
     <div class="row r-66">

@@ -58,7 +58,8 @@ let HIST = [], HOY = [], HOY_AT = null;
 let DATES = [];
 const charts = {};
 const F = { mons: ['$'], seg: 'ALL', cat: 'ALL', tipo: 'ALL', calif: 'ALL', per: '1M', desde: '', hasta: '', tramo: null };
-let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '', vResMode = 'seg';
+let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '', vResMode = 'seg', vRef = 5;
+const vOpen = new Set();
 let EMP = { main: null, cmp: [], ref: 'cat' };
 let rtTimer = null;
 
@@ -214,7 +215,7 @@ function bindTips(root, sel, fn) { root.querySelectorAll(sel).forEach(el => { el
 function downloadBlob(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
 function exportTable(id) {
   const t = $(id); if (!t) return;
-  const rows = [...t.querySelectorAll('tr')].map(tr => [...tr.children].map(c => '"' + c.innerText.replace(/"/g, '""').trim() + '"').join(';'));
+  const rows = [...t.querySelectorAll('tr')].map(tr => [...tr.children].map(c => '"' + c.innerText.replace(/[▸▾]/g, '').replace(/"/g, '""').trim() + '"').join(';'));
   downloadBlob(`monitor-mav_${id}_${F.hasta || 'hoy'}.csv`, new Blob(['﻿' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
 }
 function exportPNG(id) { const c = charts[id]; if (!c) return; const a = document.createElement('a'); a.href = c.toBase64Image('image/png', 1); a.download = `monitor-mav_${id}.png`; a.click(); }
@@ -535,8 +536,12 @@ function renderVivo() {
   const neg = rated(all.filter(o => o.estado === 'Negociada'));
   const act = all.filter(o => o.estado === 'Activa');
   const today = HOY[0].date;
-  const ayerD = [...DATES].reverse().find(d => d < today);
-  const ayer = ayerD ? rated(HIST.filter(o => o.date === ayerD && passBase(o))) : [];
+  // Referencia: promedio ponderado de las últimas N ruedas anteriores a hoy (N = 1, 5 o 20)
+  const refDays = DATES.filter(d => d < today).slice(-vRef), refSet = new Set(refDays);
+  const ayerD = refDays[refDays.length - 1];
+  const ayer = refDays.length ? rated(HIST.filter(o => refSet.has(o.date) && passBase(o))) : [];
+  const refTxt = vRef === 1 ? 'vs ayer' : `vs ${vRef} ruedas`;
+  const refLong = !refDays.length ? 'sin referencia' : vRef === 1 ? `rueda del ${fmtD(ayerD)}` : `prom. ${refDays.length} ruedas (${fmtDs(refDays[0])}–${fmtDs(ayerD)})`;
   const hr = o => parseInt((o.hconc || o.tmin || '0').slice(0, 2), 10);
   const HRS = [10, 11, 12, 13, 14, 15, 16, 17];
 
@@ -546,12 +551,12 @@ function renderVivo() {
 
   // KPIs
   const cum = HRS.map(h => neg.filter(o => hr(o) <= h));
-  const d = (v, b, f) => (isFinite(v) && isFinite(b)) ? f(v - b, b) : 'sin dato de ayer';
-  const ar = (v, unit, dd = 0, col = true) => { const r = +v.toFixed(dd); return `<span class="${col ? (r > 0 ? 'up' : r < 0 ? 'dn' : '') : ''}">${r > 0 ? '▲' : r < 0 ? '▼' : '='} ${fmtN(Math.abs(r), dd)}${unit}</span> vs ayer`; };
+  const d = (v, b, f) => (isFinite(v) && isFinite(b)) ? f(v - b, b) : 'sin referencia';
+  const ar = (v, unit, dd = 0, col = true) => { const r = +v.toFixed(dd); return `<span class="${col ? (r > 0 ? 'up' : r < 0 ? 'dn' : '') : ''}">${r > 0 ? '▲' : r < 0 ? '▼' : '='} ${fmtN(Math.abs(r), dd)}${unit}</span> ${refTxt}`; };
   const lastOp = lastOps[0];
   const K = [
     { id: 'tna', l: 'TNA ponderada hoy', v: fmtN(wavg(neg), 2) + '<small>%</small>', d: d(wavg(neg), wavg(ayer), x => ar(x * 100, ' pb')), s: cum.map(a => wavg(a)), hero: 1 },
-    { id: 'monto', l: 'Monto negociado', v: fmtMonto(sum(neg)).replace(/ (MM|M|mil)$/, '<small>$1</small>'), d: ayer.length ? `ayer ${fmtMonto(sum(ayer))}` : '', s: cum.map(a => sum(a)) },
+    { id: 'monto', l: 'Monto negociado', v: fmtMonto(sum(neg)).replace(/ (MM|M|mil)$/, '<small>$1</small>'), d: ayer.length ? (vRef === 1 ? `ayer ${fmtMonto(sum(ayer))}` : `prom. diario ${fmtMonto(sum(ayer) / refDays.length)}`) : '', s: cum.map(a => sum(a)) },
     { id: 'ops', l: 'Negociadas', v: fmtN(neg.length), d: `${fmtN(act.length)} activas ahora`, s: HRS.map(h => neg.filter(o => hr(o) === h).length), bar: 1 },
     { id: 'ppv', l: 'Plazo prom. pond.', v: fmtN(wavg(neg, 'ppv'), 0) + '<small>días</small>', d: d(wavg(neg, 'ppv'), wavg(ayer, 'ppv'), x => ar(x, ' d', 0, false)), s: cum.map(a => wavg(a, 'ppv')) },
     { id: 'last', l: 'Última operación', v: lastOp ? esc(lastOp.hconc.slice(0, 5)) : '—', d: lastOp ? `${esc(lastOp.emp.slice(0, 22))} · ${fmtN(lastOp.tna, 2)}%` : '', s: HRS.map(h => sum(neg.filter(o => hr(o) === h))), bar: 1 },
@@ -567,7 +572,7 @@ function renderVivo() {
   const rad = m => 3 + 9 * Math.sqrt(m / maxM);
   const dsPts = SEGS.map(s => { const a = neg.filter(o => o.seg === s.k && o.ppv <= xMax); return { label: s.k, data: a.map(o => ({ x: o.ppv, y: o.tna, o })), backgroundColor: s.c + 'cc', borderColor: '#151920', borderWidth: 1, pointRadius: a.map(o => rad(o.monto)), pointHoverRadius: a.map(o => rad(o.monto) + 2) }; });
   const dsFit = SEGS.filter(s => fits[s.k]).map(s => { const f = fits[s.k]; const pts = []; for (let x = Math.max(1, f.lo); x <= Math.min(xMax, f.hi * 1.2); x += Math.max(1, xMax / 60)) pts.push({ x, y: f.f(x) }); return { type: 'line', label: s.k + ' (ayer)', data: pts, borderColor: s.c, borderDash: [5, 4], borderWidth: 2, pointRadius: 0, tension: 0 }; });
-  legend('vCurveLeg', [...SEGS.map(s => ({ l: s.k, c: s.c, cls: 'cir' })), { l: ayerD ? `curva ajustada ${fmtD(ayerD)}` : 'sin curva de ayer', c: 'transparent', cls: 'dash' }]);
+  legend('vCurveLeg', [...SEGS.map(s => ({ l: s.k, c: s.c, cls: 'cir' })), { l: refDays.length ? `curva ajustada · ${refLong}` : 'sin curva de referencia', c: 'transparent', cls: 'dash' }]);
   mkChart('vCurve', {
     type: 'scatter', data: { datasets: [...dsFit, ...dsPts] },
     options: {
@@ -583,10 +588,20 @@ function renderVivo() {
     const t = wavg(a), p = wavg(a, 'ppv'), tb = b.length ? wavg(b) : NaN, dl = (t - tb) * 100;
     return `<tr class="${cls}"><td class="l nm">${c ? `<span class="sw" style="background:${c}"></span>` : ''}${l}</td><td>${fmtN(a.length)}</td><td>${fmtMonto(sum(a))}<span style="color:var(--muted)"> · ${fmtN(Mt ? sum(a) / Mt * 100 : 0, 0)}%</span></td><td>${fmtN(p, 0)} d</td><td>${fmtN(t, 2)}%</td><td>${fmtN(wTem(a), 2)}%</td><td>${fmtN(wTea(a), 2)}%</td><td style="color:${!isFinite(dl) ? 'var(--muted)' : dl > 0 ? 'var(--up)' : dl < 0 ? 'var(--down)' : 'inherit'}">${isFinite(dl) ? (dl > 0 ? '+' : '') + fmtN(dl, 0) + ' pb' : '—'}</td></tr>`;
   };
-  const rowsR = grp.map(g => ({ g, a: neg.filter(g.f), b: ayer.filter(g.f) })).filter(r => r.a.length);
-  $('vResNote').textContent = ayerD ? `Δ vs. ${fmtD(ayerD)}` : '';
-  $('vRes').innerHTML = `<thead><tr><th class="l">${vResMode === 'cat' ? 'Categoría' : 'Segmento'}</th><th>Ops</th><th>Monto</th><th>Plazo</th><th>TNA</th><th>TEM</th><th>TEA</th><th>Δ TNA</th></tr></thead><tbody>` +
-    (rowsR.length ? rowsR.map(r => line(r.g.l, r.g.c, r.a, r.b)).join('') + line('Total', '', neg, ayer, 'tot') : `<tr><td class="l" colspan="8" style="color:var(--muted)">Todavía no hay operaciones negociadas hoy.</td></tr>`) + '</tbody>';
+  document.querySelectorAll('#vRefSel button').forEach(b => b.classList.toggle('on', +b.dataset.r === vRef));
+  const rowsR = [...grp.map(g => ({ g, a: neg.filter(g.f), b: ayer.filter(g.f) })).filter(r => r.a.length), { g: { k: 'Total', l: 'Total', c: '', f: () => true }, a: neg, b: ayer, tot: true }];
+  $('vResNote').textContent = `Δ TNA ${refTxt}`;
+  $('vResFoot').textContent = 'Referencia: ' + refLong + '.';
+  const allOpen = rowsR.every(r => vOpen.has(r.g.k));
+  $('vOpenAll').textContent = allOpen ? '▾ Cerrar tramos' : '▸ Abrir tramos';
+  let body = '';
+  rowsR.forEach(r => {
+    const open = vOpen.has(r.g.k);
+    body += line(`<button class="car" data-g="${esc(r.g.k)}">${open ? '▾' : '▸'}</button>${r.g.l}`, r.g.c, r.a, r.b, r.tot ? 'tot' : 'gr-row');
+    if (open) TRAMOS.forEach(t => { const a = r.a.filter(o => o.tramo === t); if (a.length) body += line(t + ' d', '', a, r.b.filter(o => o.tramo === t), 'sub'); });
+  });
+  $('vRes').innerHTML = `<thead><tr><th class="l">${vResMode === 'cat' ? 'Categoría' : 'Segmento'} / tramo</th><th>Ops</th><th>Monto</th><th>Plazo</th><th>TNA</th><th>TEM</th><th>TEA</th><th>Δ TNA</th></tr></thead><tbody>` +
+    (neg.length ? body : `<tr><td class="l" colspan="8" style="color:var(--muted)">Todavía no hay operaciones negociadas hoy.</td></tr>`) + '</tbody>';
 
   // Intradía
   mkChart('vAcum', { type: 'line', data: { labels: HRS.map(h => h + 'h'), datasets: [{ label: 'Monto acumulado', data: cum.map(a => sum(a) / 1e6), borderColor: '#A6E635', backgroundColor: 'rgba(166,230,53,.12)', fill: true, borderWidth: 2, pointRadius: 3, tension: .3 }] },
@@ -816,6 +831,12 @@ function init() {
   $('btnXlsx').onclick = exportXlsx;
   $('tabs').onclick = e => { const t = e.target.closest('[data-v]'); if (t) setView(t.dataset.v); };
   $('mHmMode').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { hmMode = b.dataset.m; render(); } };
+  $('vRefSel').onclick = e => { const b = e.target.closest('[data-r]'); if (b) { vRef = +b.dataset.r; renderVivo(); } };
+  $('vRes').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; const k = b.dataset.g; vOpen.has(k) ? vOpen.delete(k) : vOpen.add(k); renderVivo(); };
+  $('vOpenAll').onclick = () => {
+    const keys = [...(vResMode === 'cat' ? CATS : SEGS).map(x => x.k), 'Total'];
+    const all = keys.every(k => vOpen.has(k)); keys.forEach(k => all ? vOpen.delete(k) : vOpen.add(k)); renderVivo();
+  };
   $('vResMode').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { vResMode = b.dataset.m; renderVivo(); } };
   $('vEst').onclick = e => { const b = e.target.closest('[data-e]'); if (b) { vEst = b.dataset.e; renderVivo(); } };
   $('vSearch').oninput = e => { vSearch = e.target.value; renderVivo(); };
