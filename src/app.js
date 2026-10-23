@@ -8,7 +8,18 @@ const PUB_ID = '2PACX-1vTD0j3RWyrONWTbyyvL9JhuPpcLR6Lq0zFzegO-g7PS4CVQ4ARrNa1MCE
 const GID    = '1748110732';   // pestaña "historico"
 const RT_GID = '1238398910';   // pestaña "hoy"
 const pubURL = gid => `https://docs.google.com/spreadsheets/d/e/${PUB_ID}/pub?gid=${gid}&single=true&output=csv&t=${Date.now()}`;
+const TIERS_GID = '1857230599';            // pestaña "tiers" publicada como CSV (avalistas + canasta corporativa); vacío = desactivado
 const RT_REFRESH_MS = 5 * 60 * 1000;
+// Benchmark (Emisores)
+const BENCH_WIN = { ars: 5, usd: 20 };   // ruedas para armar la curva base
+const HALF_LIFE = 10;                    // vida media (ruedas) del peso por antigüedad en el spread histórico
+const OUT_PP = 2.5;                      // descarta prints a más de ±2,5 pp de la curva base
+const MIN_TR = 5;                        // mínimo de prints por tramo para no considerar la base extrapolada
+const TR_HI = [30, 60, 90, 120, 150, 180, 99999];
+const trIdx = p => TR_HI.findIndex(h => p <= h);
+// Presencia (solo se ve en el Sheet del administrador). Pegar acá la URL /exec de la Web App de Apps Script; vacío = desactivado.
+const PRESENCE_URL = '';
+const PRESENCE_MS = 2 * 60 * 1000;
 
 // ── Dominio ───────────────────────────────────────────────────────────────────
 const SEGS = [
@@ -60,7 +71,9 @@ const charts = {};
 const F = { mons: ['$'], seg: 'ALL', cat: 'ALL', tipo: 'ALL', calif: 'ALL', per: '1M', desde: '', hasta: '', tramo: null };
 let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '', vResMode = 'seg', vRef = 5;
 const vOpen = new Set();
-let EMP = { main: null, cmp: [], ref: 'cat' };
+let EMP = { main: null, cmp: [], ref: 'bench' };
+let REF = null, DIDX = new Map();
+const CALC = { who: 0, plazo: 60 };
 let rtTimer = null;
 
 // ── Utilidades ────────────────────────────────────────────────────────────────
@@ -138,6 +151,38 @@ function toOps(text) {
     });
   }
   return out;
+}
+
+// ── Referencias: tiers de avalistas + canasta corporativa (pestaña "tiers") ──
+const normTxt = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+const cuitN = s => String(s ?? '').replace(/\D/g, '');
+function parseRef(text) {
+  const rows = parseCSV(text); if (rows.length < 2) return null;
+  const h = {}; rows[0].forEach((c, i) => h[normTxt(c)] = i);
+  const g = (r, c) => (h[c] != null && h[c] < r.length) ? r[h[c]].trim() : '';
+  const R = { code: new Map(), keys: [], cuit: new Map() };
+  for (const r of rows.slice(1)) {
+    const row = { clave: normTxt(g(r, 'CLAVE')), code: normTxt(g(r, 'CODIGO MAV')), nombre: g(r, 'NOMBRE').replace(/^\?$/, ''), grupo: g(r, 'GRUPO'), tier: parseInt(g(r, 'TIER'), 10) || null };
+    if (/^\d{2}-?\d{8}-?\d$/.test(row.clave)) { if (/canasta/i.test(row.grupo)) R.cuit.set(cuitN(row.clave), row); continue; }
+    if (row.code) R.code.set(row.code, row);
+    if (row.clave) R.keys.push([row.clave, row]);
+  }
+  R.keys.sort((a, b) => b[0].length - a[0].length);
+  return R;
+}
+// Unifica códigos de 4 letras (backfill) con nombres completos, asigna grupo/tier y marca la canasta
+function normOps(arr) {
+  if (!REF) return arr;
+  const cache = new Map();
+  for (const o of arr) {
+    if (o.seg === 'Avalado') {
+      let row = cache.get(o.emp);
+      if (row === undefined) { const n = normTxt(o.emp); row = REF.code.get(n) || REF.keys.find(([k]) => n.includes(k))?.[1] || null; cache.set(o.emp, row); }
+      if (row) { if (row.nombre) o.emp = row.nombre; o.grp = row.grupo; o.tier = row.tier; o.cat = /banco/i.test(row.grupo) ? 'Avalado Banco' : 'Avalado SGR'; }
+      else o.grp = o.cat === 'Avalado Banco' ? 'Banco' : 'SGR';
+    } else if (REF.cuit.size && REF.cuit.has(cuitN(o.cuit))) o.basket = true;
+  }
+  return arr;
 }
 
 // ── Filtros ───────────────────────────────────────────────────────────────────
@@ -332,9 +377,12 @@ async function fetchCSV(gid) {
 async function loadHist() {
   overlay('Cargando histórico…');
   try {
-    HIST = toOps(await fetchCSV(GID));
+    const [hTxt, rTxt] = await Promise.all([fetchCSV(GID), TIERS_GID ? fetchCSV(TIERS_GID).catch(() => '') : '']);
+    if (rTxt) { try { REF = parseRef(rTxt); } catch (e) { REF = null; } }
+    HIST = normOps(toOps(hTxt));
     if (!HIST.length) throw new Error('El histórico no tiene filas.');
     DATES = [...new Set(HIST.map(o => o.date))].sort();
+    DIDX = new Map(DATES.map((d, i) => [d, i]));
     if (!F.hasta || F.per !== 'CUST') setPeriodo(F.per);
     $('eList').innerHTML = [...new Set(HIST.map(o => o.emp))].sort().map(n => `<option value="${esc(n)}">`).join('');
     overlay(null);
@@ -343,7 +391,7 @@ async function loadHist() {
 }
 async function loadHoy(silent) {
   if (!silent) overlay('Cargando la rueda de hoy…');
-  try { HOY = toOps(await fetchCSV(RT_GID)); HOY_AT = new Date(); overlay(null); if (view === 'vivo') renderVivo(); updStamp(); }
+  try { HOY = normOps(toOps(await fetchCSV(RT_GID))); HOY_AT = new Date(); overlay(null); if (view === 'vivo') renderVivo(); updStamp(); }
   catch (e) { if (!silent) overlay('Error tiempo real: ' + esc(e.message), true); }
 }
 function updStamp() {
@@ -358,6 +406,7 @@ function setView(v) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.v === v));
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('on', s.id === 'v-' + v));
   if (location.hash !== '#' + v) history.replaceState(null, '', '#' + v);
+  ping();
   clearInterval(rtTimer); rtTimer = null;
   if (v === 'vivo') { if (!HOY.length) loadHoy(); rtTimer = setInterval(() => loadHoy(true), RT_REFRESH_MS); }
   render();
@@ -625,6 +674,71 @@ function renderVivoTable(all) {
 // ══════════════════════════════════════════════════════════════════════════════
 // EMISORES
 // ══════════════════════════════════════════════════════════════════════════════
+// Curva base: TNA = a + b·ln(plazo), cada emisor pesa igual, con descarte de outliers (±OUT_PP)
+function fitEq(a) {
+  const go = arr => {
+    const tot = new Map(); arr.forEach(o => tot.set(o.emp, (tot.get(o.emp) || 0) + o.monto));
+    let W = 0, Sx = 0, Sy = 0, Sxx = 0, Sxy = 0;
+    for (const o of arr) { const w = o.monto / tot.get(o.emp), x = Math.log(o.ppv); W += w; Sx += w * x; Sy += w * o.tna; Sxx += w * x * x; Sxy += w * x * o.tna; }
+    const den = W * Sxx - Sx * Sx; if (!(W > 0) || Math.abs(den) < 1e-9) return null;
+    const b = (W * Sxy - Sx * Sy) / den, a0 = (Sy - b * Sx) / W; return d => a0 + b * Math.log(d);
+  };
+  let f = go(a); if (!f) return null;
+  const k = a.filter(o => Math.abs(o.tna - f(o.ppv)) <= OUT_PP);
+  if (k.length >= 8) { const f2 = go(k); if (f2) return { f: f2, ops: k }; }
+  return { f, ops: a };
+}
+const domOf = (a, k) => [...groupBy(a, o => o[k] ?? '').entries()].sort((x, y) => sum(y[1]) - sum(x[1]))[0]?.[0];
+// Define contra qué se compara un emisor
+function benchDef(E) {
+  const mon = domOf(E.r, 'mon'), seg = domOf(E.r, 'seg'), cat = domOf(E.r, 'cat'), grp = domOf(E.r, 'grp'), tier = +domOf(E.r, 'tier') || null;
+  const fce = domOf(E.r, 'tipo') === 'FCE', usd = mon !== '$';
+  const same = o => o.mon === mon && (fce ? o.tipo === 'FCE' : o.tipo !== 'FCE') && o.ppv > 0 && typeof o.tna === 'number' && isFinite(o.tna);
+  let f, l;
+  if (EMP.ref === 'bench') {
+    if (seg === 'No Garantizado' && !usd && !fce && REF?.cuit.size) { f = o => o.basket; l = 'Canasta 1ª línea'; }
+    else if (seg === 'Avalado' && grp === 'SGR' && REF) { const t = tier || 4; f = o => o.seg === 'Avalado' && o.grp === 'SGR' && (o.tier || 4) === t; l = 'SGR · Tier ' + t; }
+    else if (seg === 'Avalado' && grp && REF) { f = o => o.seg === 'Avalado' && o.grp === grp; l = grp === 'Banco' ? 'Avales bancarios' : grp; }
+    else if (seg === 'Avalado') { f = o => o.cat === cat; l = CAT_S[cat] || cat; }
+    else { f = o => o.seg === seg; l = seg; }
+  } else if (EMP.ref === 'cat') { f = o => o.cat === cat; l = CAT_S[cat] || cat; }
+  else if (EMP.ref === 'seg') { f = o => o.seg === seg; l = seg; }
+  else { f = () => true; l = 'Mercado total'; }
+  // si el grupo no alcanza para armar curva: SGR → todas las SGR; resto → mismo segmento
+  let fb = null;
+  if (EMP.ref === 'bench' && seg === 'Avalado' && grp === 'SGR' && REF) fb = { f: o => o.seg === 'Avalado' && o.grp === 'SGR', l: 'SGR (todas)' };
+  else if (EMP.ref !== 'mkt' && EMP.ref !== 'seg') fb = { f: o => o.seg === seg, l: seg };
+  const sfx = (usd ? ' · ' + (MONEDAS.find(m => m.k === mon)?.l || mon) : '') + (fce ? ' · FCE' : '');
+  const mk = (ff, ll) => ({ filt: o => same(o) && ff(o) && o.emp !== E.n, same, label: ll + sfx, win: usd ? BENCH_WIN.usd : BENCH_WIN.ars, minTr: usd ? 3 : MIN_TR });
+  const B = mk(f, l); if (fb) B.fb = mk(fb.f, fb.l);
+  return B;
+}
+function benchCurves(B, dates) {
+  const byD = groupBy(HIST.filter(B.filt), o => o.date), out = new Map();
+  for (const d of dates) {
+    if (out.has(d)) continue; const i = DIDX.get(d); if (i == null) continue;
+    let r = null;
+    for (const k of [1, 2, 4]) {   // si faltan prints, amplía la ventana (×2, ×4)
+      const a = DATES.slice(Math.max(0, i - B.win * k + 1), i + 1).flatMap(x => byD.get(x) || []);
+      if (a.length >= 8 && new Set(a.map(o => o.emp)).size >= 3) { r = fitEq(a); if (r) { r.win = B.win * k; break; } }
+    }
+    out.set(d, r);
+  }
+  return out;
+}
+// Último plazo con base confiable: tramos contiguos desde 0-30 con ≥ MIN_TR prints
+function validHi(ops, min = MIN_TR) { const c = TR_HI.map((_, i) => ops.filter(o => trIdx(o.ppv) === i).length); let i = -1; while (i + 1 < c.length && c[i + 1] >= min) i++; return i < 0 ? 0 : TR_HI[i]; }
+function entSpread(E, B, curves, today) {
+  const iT = DIDX.get(today);
+  const pts = E.r.filter(B.same).map(o => { const c = curves.get(o.date); if (!c) return null; const age = Math.max(0, iT - DIDX.get(o.date)); return { o, s: (o.tna - c.f(o.ppv)) * 100, w: o.monto * Math.pow(.5, age / HALF_LIFE), age }; }).filter(Boolean);
+  const q = (a, p) => { const s = [...a].sort((x, y) => x.s - y.s), W = s.reduce((t, x) => t + x.w, 0); let c = 0; for (const x of s) { c += x.w; if (c >= p * W) return x.s; } return NaN; };
+  const Q = a => a.length ? { p25: q(a, .25), med: q(a, .5), p75: q(a, .75), n: a.length } : null;
+  const tr = TR_HI.map((_, i) => { const a = pts.filter(x => trIdx(x.o.ppv) === i); if (a.length < 3) return null; const last = [...a].sort((x, y) => y.o.date.localeCompare(x.o.date) || y.o.monto - x.o.monto)[0]; return { ...Q(a), last: last.s }; });
+  return { pts, all: Q(pts), tr, byOp: new Map(pts.map(x => [x.o, x.s])) };
+}
+const rgbaHex = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; };
+const sgnPb = v => { if (!isFinite(v)) return '—'; const r = Math.round(v); return (r >= 0 ? '+' : '−') + fmtN(Math.abs(r), 0); };
+
 function renderEmisores() {
   $('eMain').value = EMP.main || '';
   document.querySelectorAll('#eRef button').forEach(b => b.classList.toggle('on', b.dataset.r === EMP.ref));
@@ -644,12 +758,29 @@ function renderEmisores() {
   const E = ents[0];
   if (!E.a.length) { $('eBody').innerHTML = `<div class="card empty">${esc(EMP.main)} no tiene operaciones en ${MONEDAS.filter(m => F.mons.includes(m.k)).map(m => m.l).join(' + ')} entre ${fmtD(F.desde)} y ${fmtD(F.hasta)}. Probá ampliar el período o cambiar la moneda.</div>`; return; }
 
+  // Benchmark: curva base por día, spread de cada print, base de hoy
+  const today = DATES.filter(d => d <= F.hasta).pop();
+  ents.forEach(e => {
+    if (!e.r.length) return;
+    e.B = benchDef(e);
+    const need = [...new Set(e.r.map(o => o.date)), today];
+    e.cur = benchCurves(e.B, need); e.base = e.cur.get(today);
+    if (!e.base && e.B.fb) { const nb = e.B.fb; nb.note = e.B.label; e.B = nb; e.cur = benchCurves(e.B, need); e.base = e.cur.get(today); }
+    e.hi = e.base ? validHi(e.base.ops, e.B.minTr) : 0;
+    e.S = entSpread(e, e.B, e.cur, today);
+    if (EMP.ref === 'bench') e.spr = e.S.all ? e.S.all.med : NaN;
+  });
+  const B0 = E.B || { label: '—', win: 0, filt: () => false };
+
   $('eBody').innerHTML = `
     <div class="kpis" id="eKpis"></div>
     <div class="row r-66">
-      <div class="card"><div class="ch"><div class="ct">TNA por tramo vs. mercado</div><div class="tools"><span class="cs">mismo período y moneda</span><button class="ico" data-png="eCurve">PNG</button></div></div><div class="leg" id="eCurveLeg"></div><div class="chart"><canvas id="eCurve"></canvas></div></div>
-      <div class="card"><div class="ch"><div class="ct">Spread vs. mercado por tramo</div><div class="tools"><span class="cs">pb · ${{ cat: 'vs. misma categoría', seg: 'vs. mismo segmento', mkt: 'vs. mercado total' }[EMP.ref]}, mismo tramo</span><button class="ico" data-png="eSpread">PNG</button></div></div><div class="leg" id="eSpreadLeg"></div><div class="chart"><canvas id="eSpread"></canvas></div></div>
+      <div class="card"><div class="ch"><div class="ct">Curva vs. ${esc(B0.label)}</div><div class="tools"><span class="cs">base al ${fmtD(today)} · ${E.base?.win || B0.win} ruedas</span><button class="ico" data-png="eCurve">PNG</button></div></div><div class="leg" id="eCurveLeg"></div><div class="chart" style="height:340px"><canvas id="eCurve"></canvas></div>
+        ${B0.note ? `<div class="kwarn" style="margin:0 0 8px">${esc(B0.note)} no tiene prints suficientes en las últimas ruedas: se usa ${esc(B0.label)} como base.</div>` : ''}<div class="hint">Base: TNA = a + b·ln(plazo) sobre ${esc(B0.label)}, cada emisor pesa igual, sin prints a más de ±${fmtN(OUT_PP, 1)} pp de la curva. Banda: base de hoy + spread histórico de ${esc(E.n.slice(0, 30))} (p25–p75). Prints recientes en color pleno; anillo = último día. <span class="ex">EXTRAPOLADA</span> = plazos donde la base tiene menos de ${B0.minTr || MIN_TR} prints por tramo.</div></div>
+      <div class="card"><div class="ch"><div class="ct">Spread vs. ${esc(B0.label)} por tramo</div><div class="tools"><span class="cs">pb · período elegido · peso por monto y antigüedad</span><button class="ico" data-png="eSpread">PNG</button></div></div><div class="leg" id="eSpreadLeg"></div><div class="chart" style="height:340px"><canvas id="eSpread"></canvas></div>
+        <div class="hint">Spread de cada print = su TNA − la base de ese día a su plazo exacto. Barra: p25–p75 · línea: mediana · rombo: último print. Los prints recientes pesan más (vida media ${HALF_LIFE} ruedas). Rombo debajo de la barra = el último salió caro para el comprador respecto de su historia.</div></div>
     </div>
+    <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Calculadora de tasa</div><span class="cs">tasa justa = base de hoy + spread mediano</span></div><div id="eCalc"></div></div></div>
     <div class="row r-333">
       <div class="card"><div class="ch"><div class="ct">Vencimientos por mes</div><span class="cs">estimado: fecha + plazo</span></div><div class="chart" style="height:220px"><canvas id="eVenc"></canvas></div></div>
       <div class="card"><div class="ch"><div class="ct">Composición</div><span class="cs">${esc(E.n.slice(0, 28))}</span></div><div class="comp" id="eComp"></div></div>
@@ -659,27 +790,21 @@ function renderEmisores() {
     <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Detalle de operaciones · ${esc(E.n)}</div><button class="ico" data-csv="eOps">CSV</button></div><div class="tbl-wrap"><table id="eOps"></table></div></div></div>`;
 
   const domin = k => [...groupBy(E.a, o => o[k]).entries()].sort((x, y) => sum(y[1]) - sum(x[1]))[0][0];
-  const refLbl = EMP.ref === 'cat' ? 'Mercado · ' + domin('cat') : EMP.ref === 'seg' ? 'Mercado · ' + domin('seg') : 'Mercado total';
-  const refFilt = EMP.ref === 'cat' ? (c => o => o.cat === c)(domin('cat')) : EMP.ref === 'seg' ? (g => o => o.seg === g)(domin('seg')) : () => true;
+  const refLbl = EMP.ref === 'bench' ? B0.label : EMP.ref === 'cat' ? 'Mercado · ' + domin('cat') : EMP.ref === 'seg' ? 'Mercado · ' + domin('seg') : 'Mercado total';
+  const refFilt = EMP.ref === 'bench' ? (o => B0.filt(o)) : EMP.ref === 'cat' ? (c => o => o.cat === c)(domin('cat')) : EMP.ref === 'seg' ? (g => o => o.seg === g)(domin('seg')) : () => true;
+  const tierTag = E.r.length && domOf(E.r, 'tier') ? ` · Tier ${domOf(E.r, 'tier')}` : '';
   const K = [
-    { l: 'Monto', v: fmtMonto(E.m), d: `${fmtN(E.a.length)} ops · ${esc(CAT_S[E.cat] || E.cat || '')}`, hero: 1 },
-    { l: 'TNA ponderada', v: fmtN(E.t, 2) + '<small>%</small>', d: `${refLbl.toLowerCase()} ${fmtN(wavg(mktR.filter(refFilt)), 2)}%` },
-    { l: 'Spread vs. mercado', v: isFinite(E.spr) ? (E.spr >= 0 ? '+' : '') + fmtN(E.spr, 0) + '<small>pb</small>' : '—', d: { cat: 'vs. misma categoría y tramo', seg: 'vs. mismo segmento y tramo', mkt: 'vs. mercado total, mismo tramo' }[EMP.ref] },
+    { l: 'Monto', v: fmtMonto(E.m), d: `${fmtN(E.a.length)} ops · ${esc(CAT_S[E.cat] || E.cat || '')}${tierTag}`, hero: 1 },
+    { l: 'TNA ponderada', v: fmtN(E.t, 2) + '<small>%</small>', d: `${esc(refLbl.toLowerCase())} ${fmtN(wavg(mktR.filter(refFilt)), 2)}%` },
+    { l: 'Spread vs. ' + (EMP.ref === 'bench' ? 'benchmark' : 'mercado'), v: isFinite(E.spr) ? (E.spr >= 0 ? '+' : '') + fmtN(E.spr, 0) + '<small>pb</small>' : '—', d: EMP.ref === 'bench' ? 'mediana vs. ' + esc(B0.label.toLowerCase()) : { cat: 'vs. misma categoría y tramo', seg: 'vs. mismo segmento y tramo', mkt: 'vs. mercado total, mismo tramo' }[EMP.ref] },
     { l: 'Plazo prom. pond.', v: fmtN(E.p, 0) + '<small>días</small>', d: `mercado ${fmtN(wavg(mktR, 'ppv'), 0)} d` },
     { l: 'CUIT', v: `<span style="font-size:18px">${esc(E.cuit || '—')}</span>`, d: `<button class="ico" id="eToSpread">Ver spread histórico →</button>` },
   ];
   $('eKpis').innerHTML = K.map(k => `<div class="kpi${k.hero ? ' hero' : ''}"><div class="kl">${k.l}</div><div class="kv">${k.v}</div><div class="kd">${k.d}</div></div>`).join('');
   $('eToSpread').onclick = () => { const seg = [...groupBy(E.a, o => o.seg).entries()].sort((x, y) => sum(y[1]) - sum(x[1]))[0][0]; SPR.a = 'emp:' + E.n; SPR.b = 'seg:' + seg; SPR.tramo = true; setView('curvas'); setTimeout(() => $('spTitle').scrollIntoView({ behavior: 'smooth' }), 50); };
 
-  legend('eCurveLeg', [{ l: refLbl, c: 'transparent', cls: 'dash' }, ...ents.map(e => ({ l: e.n, c: e.c, cls: 'ln' }))]);
-  mkChart('eCurve', { type: 'line', data: { labels: TRAMOS.map(t => t + ' d'), datasets: [
-    { label: refLbl, data: TRAMOS.map(t => { const a = mktR.filter(o => o.tramo === t && refFilt(o)); return a.length ? wavg(a) : null; }), borderColor: '#aab2bd', borderDash: [5, 4], borderWidth: 2, pointRadius: 0, tension: .3, spanGaps: true },
-    ...ents.map(e => ({ label: e.n, data: TRAMOS.map(t => { const a = e.r.filter(o => o.tramo === t); return a.length ? wavg(a) : null; }), borderColor: e.c, backgroundColor: e.c, borderWidth: 2, pointRadius: 4, pointBorderColor: '#151920', pointBorderWidth: 2, tension: .3, spanGaps: true })),
-  ] }, options: { interaction: { mode: 'index', intersect: false }, scales: { x: AXX, y: { ...AX, ticks: { callback: v => v + '%' } } }, plugins: { tooltip: { filter: i => i.parsed.y != null, callbacks: { label: i => ` ${i.dataset.label.slice(0, 30)}: ${fmtN(i.parsed.y, 2)}%` } } } } });
-
-  legend('eSpreadLeg', ents.map(e => ({ l: e.n, c: e.c })));
-  mkChart('eSpread', { type: 'bar', data: { labels: TRAMOS.map(t => t + ' d'), datasets: ents.map(e => ({ label: e.n, data: TRAMOS.map(t => { const a = e.r.filter(o => o.tramo === t); if (!a.length) return null; return a.reduce((s, o) => s + (o.tna - (refOf(o) ?? o.tna)) * o.monto, 0) / sum(a) * 100; }), backgroundColor: e.c, borderRadius: 3, barPercentage: .8, categoryPercentage: .7 })) },
-    options: { interaction: { mode: 'index', intersect: false }, scales: { x: AXX, y: { ...AX, ticks: { callback: v => (v > 0 ? '+' : '') + v }, grid: { color: c => c.tick.value === 0 ? 'rgba(255,255,255,.3)' : 'rgba(255,255,255,.05)' } } }, plugins: { tooltip: { filter: i => i.parsed.y != null, callbacks: { label: i => ` ${i.dataset.label.slice(0, 30)}: ${i.parsed.y >= 0 ? '+' : ''}${fmtN(i.parsed.y, 0)} pb` } } } } });
+  renderBenchCharts(ents, today);
+  renderCalc(ents, today);
 
   // Vencimientos (principal)
   const venc = new Map();
@@ -706,7 +831,84 @@ function renderEmisores() {
   }
   const ops = [...E.a].sort((x, y) => y.date.localeCompare(x.date) || y.monto - x.monto);
   $('eOps').innerHTML = `<thead><tr><th class="l">Fecha</th><th class="l">Segmento</th><th class="l">Instr.</th><th>Plazo</th><th class="l">Tramo</th><th>TNA</th><th>vs. ref.</th><th>Monto</th><th>Vto. est.</th><th>Comprador</th></tr></thead><tbody>` +
-    ops.slice(0, 500).map(o => { const ref = refOf(o); const dv = isFinite(o.tna) && isFinite(ref) ? (o.tna - ref) * 100 : NaN; return `<tr><td class="l">${fmtD(o.date)}</td><td class="l"><span class="sw" style="background:${SEG_C[o.seg] || '#717a86'}"></span>${esc(o.seg)}</td><td class="l">${esc(o.tipo)}</td><td>${o.ppv} d</td><td class="l">${esc(o.tramo)}</td><td>${isFinite(o.tna) ? fmtN(o.tna, 2) + '%' : '—'}</td><td style="color:${dv > 0 ? 'var(--up)' : dv < 0 ? 'var(--down)' : 'inherit'}">${isFinite(dv) ? (dv >= 0 ? '+' : '') + fmtN(dv, 0) + ' pb' : '—'}</td><td>${fmtMonto(o.monto)}</td><td>${o.ppv > 0 ? fmtD(isoAdd(o.date, o.ppv)) : '—'}</td><td>${esc(o.comp || '—')}</td></tr>`; }).join('') + '</tbody>';
+    ops.slice(0, 500).map(o => { const ref = refOf(o); const dv = EMP.ref === 'bench' ? (E.S?.byOp.get(o) ?? NaN) : isFinite(o.tna) && isFinite(ref) ? (o.tna - ref) * 100 : NaN; return `<tr><td class="l">${fmtD(o.date)}</td><td class="l"><span class="sw" style="background:${SEG_C[o.seg] || '#717a86'}"></span>${esc(o.seg)}</td><td class="l">${esc(o.tipo)}</td><td>${o.ppv} d</td><td class="l">${esc(o.tramo)}</td><td>${isFinite(o.tna) ? fmtN(o.tna, 2) + '%' : '—'}</td><td style="color:${dv > 0 ? 'var(--up)' : dv < 0 ? 'var(--down)' : 'inherit'}">${isFinite(dv) ? (dv >= 0 ? '+' : '') + fmtN(dv, 0) + ' pb' : '—'}</td><td>${fmtMonto(o.monto)}</td><td>${o.ppv > 0 ? fmtD(isoAdd(o.date, o.ppv)) : '—'}</td><td>${esc(o.comp || '—')}</td></tr>`; }).join('') + '</tbody>';
+}
+function renderBenchCharts(ents, today) {
+  const E = ents[0], base = E.base, hi = E.hi || 0;
+  const W = ents.filter(e => e.S && e.S.pts.length);
+  // ── Curva vs. base ──
+  const allPts = W.flatMap(e => e.S.pts.map(x => x.o));
+  const pl = allPts.map(o => o.ppv).sort((a, b) => a - b);
+  const xMax = Math.min(365, Math.max(120, Math.ceil((pl[Math.floor(pl.length * .98)] || 120) / 30) * 30));
+  const xs = []; for (let p = 7; p <= xMax; p += 2) xs.push(p);
+  const yv = [...allPts.map(o => o.tna), ...(base ? [base.f(7), base.f(xMax)] : [])].filter(isFinite).sort((a, b) => a - b);
+  const yLo = Math.floor((yv[Math.floor(yv.length * .02)] ?? 20) - .5), yHi = Math.ceil((yv[Math.floor(yv.length * .98)] ?? 35) + .5);
+  const line = (f, lo, hiX) => xs.map(p => ({ x: p, y: p >= lo && p <= hiX ? f(p) : null }));
+  const q = E.S?.all;
+  const iT = DIDX.get(today);
+  const ds = [];
+  if (base) {
+    ds.push({ type: 'scatter', label: 'base', data: base.ops.filter(o => DIDX.get(o.date) > iT - 5).map(o => ({ x: o.ppv, y: o.tna })), pointRadius: 2.2, backgroundColor: '#4a515c', order: 9 });
+    if (q) {
+      ds.push({ type: 'line', label: 'p25', data: line(p => base.f(p) + q.p25 / 100, 7, xMax), borderWidth: 0, pointRadius: 0, fill: false, order: 8 });
+      ds.push({ type: 'line', label: 'p75', data: line(p => base.f(p) + q.p75 / 100, 7, xMax), borderWidth: 0, pointRadius: 0, fill: '-1', backgroundColor: rgbaHex(E.c, .2), order: 8 });
+      ds.push({ type: 'line', label: 'justa', data: line(p => base.f(p) + q.med / 100, 7, xMax), borderColor: rgbaHex(E.c, .9), borderDash: [3, 3], borderWidth: 1.2, pointRadius: 0, order: 7 });
+    }
+    ds.push({ type: 'line', label: 'Base', data: line(base.f, 7, Math.max(hi, 7)), borderColor: '#e9ecef', borderWidth: 2, pointRadius: 0, order: 6 });
+    ds.push({ type: 'line', label: 'Base extrapolada', data: line(base.f, Math.max(hi, 7), xMax), borderColor: '#e0a84a', borderDash: [6, 4], borderWidth: 2, pointRadius: 0, order: 6 });
+  }
+  [...W].reverse().forEach((e, k) => {
+    ds.push({ type: 'bubble', label: e.n, data: e.S.pts.map(x => ({ x: x.o.ppv, y: x.o.tna, r: Math.min(14, Math.max(2.5, Math.sqrt(x.o.monto / 1e9) * 2.2)), _a: x.age, _o: x.o, _s: x.s })),
+      backgroundColor: c => rgbaHex(e.c, c.raw?._a === 0 ? 1 : c.raw?._a < 5 ? .7 : .28), borderColor: c => c.raw?._a === 0 ? '#fff' : 'transparent', borderWidth: 1.5, order: 2 + k });
+  });
+  legend('eCurveLeg', [{ l: 'Base ' + E.B.label, c: '#e9ecef', cls: 'ln' }, { l: 'Extrapolada', c: '#e0a84a', cls: 'ln' }, ...(q ? [{ l: E.n.slice(0, 24) + ': base + spread p25–p75', c: rgbaHex(E.c, .35) }] : []), ...W.map(e => ({ l: e.n.slice(0, 30) + (e.B.label !== E.B?.label ? ` (vs. ${e.B.label})` : ''), c: e.c, cls: 'cir' })), { l: 'prints base (5 ruedas)', c: '#4a515c', cls: 'cir' }]);
+  const extPlug = (getPx, txt) => ({ id: 'ext', beforeDatasetsDraw(ch) { const px = getPx(ch); if (px == null) return; const { ctx, chartArea: a } = ch; if (px >= a.right) return; ctx.save(); ctx.fillStyle = 'rgba(224,168,74,.06)'; ctx.fillRect(Math.max(px, a.left), a.top, a.right - Math.max(px, a.left), a.bottom - a.top); ctx.fillStyle = '#e0a84a'; ctx.font = "600 10px 'JetBrains Mono',monospace"; ctx.fillText(txt, Math.max(px, a.left) + 8, a.top + 14); ctx.restore(); } });
+  mkChart('eCurve', { data: { datasets: ds }, options: {
+    scales: { x: { ...AXX, type: 'linear', min: 0, max: xMax, ticks: { stepSize: 30 }, title: { display: true, text: 'plazo (días)', color: '#717a86' } }, y: { ...AX, min: yLo, max: yHi, ticks: { callback: v => v + '%' } } },
+    plugins: { tooltip: { filter: i => i.raw?._o, callbacks: { title: () => '', label: i => { const o = i.raw._o; return ` ${o.emp.slice(0, 26)} · ${fmtDs(o.date)} · ${o.ppv} d · ${fmtN(o.tna, 2)}% · ${sgnPb(i.raw._s)} pb · ${fmtMonto(o.monto)}`; } } } } },
+    plugins: base ? [extPlug(ch => hi >= 99999 ? null : ch.scales.x.getPixelForValue(hi), 'BASE EXTRAPOLADA')] : [] });
+
+  // ── Spread por tramo ──
+  const vsL = e => e.B.label !== E.B?.label ? ` (vs. ${e.B.label})` : '';
+  legend('eSpreadLeg', [...W.map(e => ({ l: e.n.slice(0, 30) + vsL(e) + ' p25–p75', c: rgbaHex(e.c, .6) })), { l: 'mediana', c: '#fff', cls: 'ln' }, { l: '◆ último print', c: 'transparent' }]);
+  const exIdx = TR_HI.findIndex(h => h > hi);
+  const vals = W.flatMap(e => e.S.tr.filter(Boolean).flatMap(v => [v.p25, v.p75, v.last]));
+  const sLo = Math.floor(Math.min(0, ...vals) / 50) * 50 - 25, sHi = Math.ceil(Math.max(0, ...vals) / 50) * 50 + 25;
+  mkChart('eSpread', { type: 'bar', data: { labels: TRAMOS.map((t, i) => i >= exIdx && exIdx >= 0 ? [t + ' d', 'extrap.'] : [t + ' d', '']), datasets: W.map(e => ({ label: e.n, data: e.S.tr.map(v => v ? [v.p25, v.p75] : null), _tr: e.S.tr, _c: e.c, backgroundColor: rgbaHex(e.c, .55), borderRadius: 2, barPercentage: .8, categoryPercentage: .7 })) },
+    options: { scales: { x: { ...AXX, ticks: { color: c => exIdx >= 0 && c.index >= exIdx ? '#e0a84a' : '#717a86' } }, y: { ...AX, min: sLo, max: sHi, ticks: { callback: v => (v > 0 ? '+' : '') + v }, grid: { color: c => c.tick.value === 0 ? 'rgba(255,255,255,.35)' : 'rgba(255,255,255,.05)' } } },
+      plugins: { tooltip: { filter: i => i.raw, callbacks: { label: i => { const v = i.dataset._tr[i.dataIndex]; return ` ${i.dataset.label.slice(0, 24)}: p25 ${sgnPb(v.p25)} · med ${sgnPb(v.med)} · p75 ${sgnPb(v.p75)} · último ${sgnPb(v.last)} pb · n=${v.n}`; } } } } },
+    plugins: [extPlug(ch => { if (exIdx < 0) return null; const x = ch.scales.x; const step = x.getPixelForValue(1) - x.getPixelForValue(0); return x.getPixelForValue(exIdx) - step / 2; }, 'BASE EXTRAPOLADA'),
+      { id: 'marks', afterDatasetsDraw(ch) { const { ctx, scales: { y } } = ch; ctx.save(); ch.data.datasets.forEach((d, di) => { const meta = ch.getDatasetMeta(di); d._tr.forEach((v, i) => { if (!v) return; const el = meta.data[i]; const w = el.width, cx = el.x;
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - w / 2, y.getPixelForValue(v.med)); ctx.lineTo(cx + w / 2, y.getPixelForValue(v.med)); ctx.stroke();
+        const ly = y.getPixelForValue(v.last); ctx.fillStyle = '#fff'; ctx.strokeStyle = d._c; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx, ly - 6); ctx.lineTo(cx + 6, ly); ctx.lineTo(cx, ly + 6); ctx.lineTo(cx - 6, ly); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#aab2bd'; ctx.font = "10px 'JetBrains Mono',monospace"; ctx.textAlign = 'center'; ctx.fillText('n=' + v.n, cx, Math.min(y.getPixelForValue(v.p75), ly) - 8); }); }); ctx.restore(); } }] });
+}
+function renderCalc(ents, today) {
+  const W = ents.filter(e => e.S && e.S.all && e.base);
+  if (!W.length) { $('eCalc').innerHTML = '<div class="empty">Sin base suficiente para calcular: el benchmark no tiene prints en las últimas ruedas o el emisor no tiene historia en el período.</div>'; return; }
+  if (CALC.who >= W.length) CALC.who = 0;
+  $('eCalc').innerHTML = `<div class="calc"><div class="cin">
+      <label><span class="fl">Responsable</span><select class="sel" id="kE">${W.map((e, i) => `<option value="${i}"${i === CALC.who ? ' selected' : ''}>${esc(e.n)}</option>`).join('')}</select></label>
+      <label><span class="fl">Plazo (días)</span><input class="inp" id="kP" type="number" min="1" max="720" value="${CALC.plazo}"></label>
+      <div><span class="fl">Tasa justa (TNA)</span><div class="kbig" id="kF">—</div><div class="cs" id="kR"></div></div>
+    </div><div style="min-width:0"><div class="cres" id="kRes"></div><div class="kwarn" id="kW"></div>
+      <div class="fl" style="margin:14px 0 6px">Últimos prints llevados a hoy</div><div class="tbl-wrap"><table id="kT"></table></div>
+      <div class="hint">"Llevado a hoy" = base de hoy a ese plazo + el spread que tuvo ese print. "vs. justa" = cuánto se aparta de la tasa justa de hoy a ese plazo (negativo = caro para el comprador).</div></div></div>`;
+  const run = () => {
+    const e = W[CALC.who], p = Math.max(1, Math.min(720, +CALC.plazo || 60)), q = e.S.all, f = e.base.f;
+    const b = f(p), fair = b + q.med / 100, lo = b + q.p25 / 100, hi2 = b + q.p75 / 100;
+    $('kF').textContent = fmtN(fair, 2) + '%';
+    $('kR').textContent = `rango ${fmtN(lo, 2)}% – ${fmtN(hi2, 2)}% · TEA ${fmtN(tea(fair, p), 2)}%`;
+    $('kRes').innerHTML = [['Base ' + e.B.label, fmtN(b, 2) + '%', p > e.hi ? 'extrapolada' : 'a ' + p + ' d'], ['Spread mediano', sgnPb(q.med) + ' pb', q.n + ' prints · período'], ['Spread p25 / p75', `${sgnPb(q.p25)} / ${sgnPb(q.p75)}`, 'pb'], ['Como comprador', '≥ ' + fmtN(fair, 2) + '%', 'pedir la mediana o más']]
+      .map(r => `<div class="kpi"><div class="kl">${esc(r[0])}</div><div class="kv" style="font-size:20px">${r[1]}</div><div class="kd">${r[2]}</div></div>`).join('');
+    $('kW').textContent = p > e.hi ? '⚠ A este plazo el benchmark casi no opera: la base es extrapolada y el resultado es menos confiable.' : '';
+    const g = new Map(); e.S.pts.forEach(x => { const k = x.o.date + '|' + x.o.ppv + '|' + x.o.tna; const y = g.get(k); if (y) y.m += x.o.monto; else g.set(k, { o: x.o, s: x.s, m: x.o.monto }); });
+    const L = [...g.values()].sort((a, b2) => b2.o.date.localeCompare(a.o.date) || b2.m - a.m).slice(0, 8);
+    $('kT').innerHTML = '<thead><tr><th class="l">Fecha</th><th>Plazo</th><th>TNA</th><th>Monto</th><th>Spread</th><th>Llevado a hoy</th><th>vs. justa</th></tr></thead><tbody>' + L.map(x => { const now = f(x.o.ppv) + x.s / 100, dd = (x.s - q.med); return `<tr><td class="l">${fmtD(x.o.date)}</td><td>${x.o.ppv} d</td><td>${fmtN(x.o.tna, 2)}%</td><td>${fmtMonto(x.m)}</td><td>${sgnPb(x.s)} pb</td><td>${fmtN(now, 2)}%</td><td style="color:${dd < 0 ? 'var(--down)' : 'var(--up)'}">${sgnPb(dd)} pb</td></tr>`; }).join('') + '</tbody>';
+  };
+  $('kE').onchange = ev => { CALC.who = +ev.target.value; run(); };
+  $('kP').oninput = ev => { CALC.plazo = +ev.target.value; run(); };
+  run();
 }
 function wireEmisores() {
   const pick = (v, add) => {
@@ -823,6 +1025,27 @@ function wireSpread() {
   $('spTramo').onchange = e => { SPR.tramo = e.target.checked; renderSpread(); };
 }
 
+// ── Presencia anónima (sin UI) ────────────────────────────────────────────────
+function presenceId() {
+  try { let id = localStorage.getItem('mmav_id'); if (!id) { id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); localStorage.setItem('mmav_id', id); } return id; }
+  catch (e) { return (window.__mmavId ||= Math.random().toString(36).slice(2, 12)); }
+}
+function navLabel() {
+  const u = navigator.userAgent;
+  const b = /Edg\//.test(u) ? 'Edge' : /OPR\//.test(u) ? 'Opera' : /Firefox\//.test(u) ? 'Firefox' : /Chrome\//.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : 'Otro';
+  const o = /Windows/.test(u) ? 'Windows' : /Android/.test(u) ? 'Android' : /iPhone|iPad/.test(u) ? 'iOS' : /Mac OS/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'Otro';
+  return b + ' · ' + o;
+}
+function ping() {
+  if (!PRESENCE_URL || document.visibilityState !== 'visible') return;
+  try { fetch(PRESENCE_URL, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ id: presenceId(), tab: view, nav: navLabel() }) }).catch(() => {}); } catch (e) {}
+}
+function startPresence() {
+  if (!PRESENCE_URL) return;
+  ping(); setInterval(ping, PRESENCE_MS);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') ping(); });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   if (typeof Chart === 'undefined') { overlay('No se pudo cargar la librería de gráficos (Chart.js). Revisá la conexión.', true); return; }
@@ -845,5 +1068,6 @@ function init() {
   if (['mercado', 'vivo', 'emisores', 'curvas'].includes(h)) { view = h; document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.v === h)); document.querySelectorAll('.view').forEach(s => s.classList.toggle('on', s.id === 'v-' + h)); }
   window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (v !== view && ['mercado', 'vivo', 'emisores', 'curvas'].includes(v)) setView(v); });
   loadHist().then(() => { if (view === 'vivo') setView('vivo'); });
+  startPresence();
 }
 init();
