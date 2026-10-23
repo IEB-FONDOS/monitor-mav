@@ -188,13 +188,26 @@ tbody tr:hover td{background:rgba(255,255,255,.02)}
 
 /* Benchmark · calculadora (Emisores) */
 .ex{display:inline-block;font:600 10px var(--mono);color:#e0a84a;border:1px solid rgba(224,168,74,.5);border-radius:4px;padding:0 5px}
-.calc{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px}
+.calc{display:grid;grid-template-columns:340px minmax(0,1fr);gap:18px;align-items:start}
 .cin{display:flex;flex-direction:column;gap:12px;min-width:0}
 .cin label{display:flex;flex-direction:column;gap:5px}
 .cin .sel,.cin .inp{width:100%;min-width:0;font-size:13px;padding:7px 10px}
 .cin .sel{padding-right:28px}
-.kbig{font:600 34px var(--mono);color:var(--accent);margin-top:4px}
-.cres{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-.cres .kpi{background:var(--card-2)}
+.kbig{font:600 28px var(--mono);color:var(--accent);margin-top:2px}
+.cin2{display:grid;grid-template-columns:1fr 90px;gap:10px}
+.cres{display:grid;grid-template-columns:1fr;gap:0;font-size:12px}
+.cres div{display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid var(--line);padding:4px 0}
+.cres span{color:var(--muted)}.cres b{font:600 12px var(--mono);color:var(--text)}
+.kscroll{max-height:210px}
 .kwarn{margin-top:10px;font-size:12px;color:#e0a84a}
-@media (max-width:900px){.calc{grid-template-columns:minmax(0,1fr)}.cres{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:900px){.calc{grid-template-columns:minmax(0,1fr)}}
+/* Tabla tasa justa por tramo */
+.trt td b{color:var(--text);font-weight:600}
+.trt .mut{color:var(--muted);font-size:10.5px}
+.trt tr.ext td{color:#c9a46a}
+.trt tr.thin td{opacity:.5}
+.vt{display:inline-block;font:600 10px var(--sans);letter-spacing:.3px;text-transform:uppercase;padding:1px 6px;border-radius:4px;margin-left:6px;background:rgba(255,255,255,.06);color:var(--text-2)}
+.vt.dn{background:rgba(57,135,229,.18);color:#7fb4f0}
+.vt.up{background:rgba(230,103,103,.18);color:#f09090}
+#eTrTab button{display:inline-flex;align-items:center;gap:6px}
+#eTrTab .sw{width:8px;height:8px;border-radius:2px;display:inline-block}

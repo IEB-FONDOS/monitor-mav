@@ -17,6 +17,8 @@ const OUT_PP = 2.5;                      // descarta prints a más de ±2,5 pp d
 const MIN_TR = 5;                        // mínimo de prints por tramo para no considerar la base extrapolada
 const TR_HI = [30, 60, 90, 120, 150, 180, 99999];
 const trIdx = p => TR_HI.findIndex(h => p <= h);
+const TR_MID = [15, 45, 75, 105, 135, 165, 240];
+const MIN_TR_SPR = 10;                   // prints mínimos de un tramo para usar su propio spread
 // Presencia (solo se ve en el Sheet del administrador). Pegar acá la URL /exec de la Web App de Apps Script; vacío = desactivado.
 const PRESENCE_URL = '';
 const PRESENCE_MS = 2 * 60 * 1000;
@@ -71,7 +73,7 @@ const charts = {};
 const F = { mons: ['$'], seg: 'ALL', cat: 'ALL', tipo: 'ALL', calif: 'ALL', per: '1M', desde: '', hasta: '', tramo: null };
 let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '', vResMode = 'seg', vRef = 5;
 const vOpen = new Set();
-let EMP = { main: null, cmp: [], ref: 'bench' };
+let EMP = { main: null, cmp: [], ref: 'bench', zoom: true, showBase: false, trTab: 0 };
 let REF = null, DIDX = new Map();
 const CALC = { who: 0, plazo: 60 };
 let rtTimer = null;
@@ -730,11 +732,21 @@ function benchCurves(B, dates) {
 function validHi(ops, min = MIN_TR) { const c = TR_HI.map((_, i) => ops.filter(o => trIdx(o.ppv) === i).length); let i = -1; while (i + 1 < c.length && c[i + 1] >= min) i++; return i < 0 ? 0 : TR_HI[i]; }
 function entSpread(E, B, curves, today) {
   const iT = DIDX.get(today);
-  const pts = E.r.filter(B.same).map(o => { const c = curves.get(o.date); if (!c) return null; const age = Math.max(0, iT - DIDX.get(o.date)); return { o, s: (o.tna - c.f(o.ppv)) * 100, w: o.monto * Math.pow(.5, age / HALF_LIFE), age }; }).filter(Boolean);
+  const pts = E.r.filter(o => B.same(o) && o.ppv >= 7).map(o => { const c = curves.get(o.date); if (!c) return null; const age = Math.max(0, iT - DIDX.get(o.date)); return { o, s: (o.tna - c.f(o.ppv)) * 100, w: o.monto * Math.pow(.5, age / HALF_LIFE), age }; }).filter(Boolean);
   const q = (a, p) => { const s = [...a].sort((x, y) => x.s - y.s), W = s.reduce((t, x) => t + x.w, 0); let c = 0; for (const x of s) { c += x.w; if (c >= p * W) return x.s; } return NaN; };
   const Q = a => a.length ? { p25: q(a, .25), med: q(a, .5), p75: q(a, .75), n: a.length } : null;
   const tr = TR_HI.map((_, i) => { const a = pts.filter(x => trIdx(x.o.ppv) === i); if (a.length < 3) return null; const last = [...a].sort((x, y) => y.o.date.localeCompare(x.o.date) || y.o.monto - x.o.monto)[0]; return { ...Q(a), last: last.s }; });
-  return { pts, all: Q(pts), tr, byOp: new Map(pts.map(x => [x.o, x.s])) };
+  // Spread según plazo: interpola entre tramos con ≥ MIN_TR_SPR prints; si no hay, usa el general
+  const all = Q(pts), knots = tr.map((v, i) => v && v.n >= MIN_TR_SPR ? { x: TR_MID[i], v } : null).filter(Boolean);
+  const at = p => {
+    if (!knots.length) return { ...all, src: 'general' };
+    if (p <= knots[0].x) return { ...knots[0].v, src: 'tramo' };
+    if (p >= knots[knots.length - 1].x) return { ...knots[knots.length - 1].v, src: 'tramo' };
+    const j = knots.findIndex(k => k.x >= p), a = knots[j - 1], b = knots[j], w = (p - a.x) / (b.x - a.x);
+    const mix = k => a.v[k] + (b.v[k] - a.v[k]) * w;
+    return { p25: mix('p25'), med: mix('med'), p75: mix('p75'), n: a.v.n + b.v.n, src: 'tramo' };
+  };
+  return { pts, all, tr, at, byOp: new Map(pts.map(x => [x.o, x.s])) };
 }
 const rgbaHex = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; };
 const sgnPb = v => { if (!isFinite(v)) return '—'; const r = Math.round(v); return (r >= 0 ? '+' : '−') + fmtN(Math.abs(r), 0); };
@@ -775,12 +787,13 @@ function renderEmisores() {
   $('eBody').innerHTML = `
     <div class="kpis" id="eKpis"></div>
     <div class="row r-66">
-      <div class="card"><div class="ch"><div class="ct">Curva vs. ${esc(B0.label)}</div><div class="tools"><span class="cs">base al ${fmtD(today)} · ${E.base?.win || B0.win} ruedas</span><button class="ico" data-png="eCurve">PNG</button></div></div><div class="leg" id="eCurveLeg"></div><div class="chart" style="height:340px"><canvas id="eCurve"></canvas></div>
-        ${B0.note ? `<div class="kwarn" style="margin:0 0 8px">${esc(B0.note)} no tiene prints suficientes en las últimas ruedas: se usa ${esc(B0.label)} como base.</div>` : ''}<div class="hint">Base: TNA = a + b·ln(plazo) sobre ${esc(B0.label)}, cada emisor pesa igual, sin prints a más de ±${fmtN(OUT_PP, 1)} pp de la curva. Banda: base de hoy + spread histórico de ${esc(E.n.slice(0, 30))} (p25–p75). Prints recientes en color pleno; anillo = último día. <span class="ex">EXTRAPOLADA</span> = plazos donde la base tiene menos de ${B0.minTr || MIN_TR} prints por tramo.</div></div>
-      <div class="card"><div class="ch"><div class="ct">Spread vs. ${esc(B0.label)} por tramo</div><div class="tools"><span class="cs">pb · período elegido · peso por monto y antigüedad</span><button class="ico" data-png="eSpread">PNG</button></div></div><div class="leg" id="eSpreadLeg"></div><div class="chart" style="height:340px"><canvas id="eSpread"></canvas></div>
-        <div class="hint">Spread de cada print = su TNA − la base de ese día a su plazo exacto. Barra: p25–p75 · línea: mediana · rombo: último print. Los prints recientes pesan más (vida media ${HALF_LIFE} ruedas). Rombo debajo de la barra = el último salió caro para el comprador respecto de su historia.</div></div>
+      <div class="card"><div class="ch"><div class="ct">Curva vs. ${esc(B0.label)}</div><div class="tools"><span class="cs">base al ${fmtD(today)} · ${E.base?.win || B0.win} ruedas</span><div class="seg" id="eZoom"><button data-z="1" class="${EMP.zoom ? 'on' : ''}">Zoom</button><button data-z="0" class="${EMP.zoom ? '' : 'on'}">Ver todo</button></div><button class="ico" data-png="eCurve">PNG</button></div></div><div class="leg" id="eCurveLeg"></div><div class="chart" style="height:340px"><canvas id="eCurve"></canvas></div>
+        <div class="ch" style="margin:8px 0 0"><label class="chk"><input type="checkbox" id="eShowBase"${EMP.showBase ? ' checked' : ''}> mostrar prints de ${esc(B0.label.toLowerCase())}</label><span class="cs" id="eOut"></span></div>
+        ${B0.note ? `<div class="kwarn" style="margin:6px 0 0">${esc(B0.note)} no tiene prints suficientes en las últimas ruedas: se usa ${esc(B0.label)} como base.</div>` : ''}<div class="hint">Línea blanca: curva base de hoy. Banda: dónde debería operar ${esc(E.n.slice(0, 30))} según su historia (base + su spread p25–p75 de cada plazo). Puntos en color: prints de las últimas 5 ruedas (anillo = último día); tenues: anteriores. <span class="ex">EXTRAPOLADA</span> = plazos con pocos prints en la base.</div></div>
+      <div class="card"><div class="ch"><div class="ct">Tasa estimada por tramo</div><div class="tools"><div class="seg" id="eTrTab"></div><button class="ico" data-csv="eTr">CSV</button></div></div><div class="tbl-wrap"><table id="eTr" class="trt"></table></div>
+        <div class="hint">Tasa estimada = base de hoy al plazo medio del tramo + spread mediano del emisor en ese tramo (rango habitual: p25–p75). Último print: la operación más reciente del tramo. "vs. estimada": diferencia entre su spread y el mediano (negativo = rindió menos de lo habitual). Se excluyen prints de menos de 7 días. Período y moneda según los filtros; los prints recientes pesan más.</div></div>
     </div>
-    <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Calculadora de tasa</div><span class="cs">tasa justa = base de hoy + spread mediano</span></div><div id="eCalc"></div></div></div>
+    <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Calculadora de tasa</div><span class="cs">tasa estimada = base de hoy + spread mediano de ese plazo</span></div><div id="eCalc"></div></div></div>
     <div class="row r-333">
       <div class="card"><div class="ch"><div class="ct">Vencimientos por mes</div><span class="cs">estimado: fecha + plazo</span></div><div class="chart" style="height:220px"><canvas id="eVenc"></canvas></div></div>
       <div class="card"><div class="ch"><div class="ct">Composición</div><span class="cs">${esc(E.n.slice(0, 28))}</span></div><div class="comp" id="eComp"></div></div>
@@ -836,75 +849,95 @@ function renderEmisores() {
 function renderBenchCharts(ents, today) {
   const E = ents[0], base = E.base, hi = E.hi || 0;
   const W = ents.filter(e => e.S && e.S.pts.length);
+  const iT = DIDX.get(today);
   // ── Curva vs. base ──
   const allPts = W.flatMap(e => e.S.pts.map(x => x.o));
   const pl = allPts.map(o => o.ppv).sort((a, b) => a - b);
-  const xMax = Math.min(365, Math.max(120, Math.ceil((pl[Math.floor(pl.length * .98)] || 120) / 30) * 30));
+  const pq = q => pl[Math.min(pl.length - 1, Math.floor(pl.length * q))];
+  const xMax = EMP.zoom ? Math.min(365, Math.max(60, Math.ceil(((pq(.95) || 90) + 5) / 30) * 30)) : Math.min(720, Math.max(120, Math.ceil((pl[pl.length - 1] || 120) / 30) * 30));
   const xs = []; for (let p = 7; p <= xMax; p += 2) xs.push(p);
-  const yv = [...allPts.map(o => o.tna), ...(base ? [base.f(7), base.f(xMax)] : [])].filter(isFinite).sort((a, b) => a - b);
-  const yLo = Math.floor((yv[Math.floor(yv.length * .02)] ?? 20) - .5), yHi = Math.ceil((yv[Math.floor(yv.length * .98)] ?? 35) + .5);
+  const S = E.S, q = S?.all;
+  const band = base && q ? xs.map(p => [base.f(p) + S.at(p).p25 / 100, base.f(p) + S.at(p).p75 / 100]) : [];
+  let yLo, yHi;
+  const tn = allPts.map(o => o.tna).filter(isFinite).sort((a, b) => a - b);
+  if (EMP.zoom) {
+    const inX = allPts.filter(o => o.ppv <= xMax).map(o => o.tna).sort((a, b) => a - b);
+    const lo = [inX[Math.floor(inX.length * .05)], ...band.map(b => b[0]), ...(base ? [base.f(Math.min(15, xMax))] : [])].filter(isFinite);
+    const hi2 = [inX[Math.floor(inX.length * .95)], ...band.map(b => b[1]), ...(base ? [base.f(xMax)] : [])].filter(isFinite);
+    yLo = Math.floor((Math.min(...lo) - .25) * 2) / 2; yHi = Math.ceil((Math.max(...hi2) + .25) * 2) / 2;
+  } else { yLo = Math.floor((tn[0] ?? 20) - .5); yHi = Math.ceil((tn[tn.length - 1] ?? 35) + .5); }
+  const outN = allPts.filter(o => o.ppv > xMax || o.tna < yLo || o.tna > yHi).length;
+  $('eOut').textContent = outN ? `${outN} prints fuera de la vista · tocá "Ver todo"` : '';
   const line = (f, lo, hiX) => xs.map(p => ({ x: p, y: p >= lo && p <= hiX ? f(p) : null }));
-  const q = E.S?.all;
-  const iT = DIDX.get(today);
   const ds = [];
   if (base) {
-    ds.push({ type: 'scatter', label: 'base', data: base.ops.filter(o => DIDX.get(o.date) > iT - 5).map(o => ({ x: o.ppv, y: o.tna })), pointRadius: 2.2, backgroundColor: '#4a515c', order: 9 });
+    if (EMP.showBase) ds.push({ type: 'scatter', label: 'base', data: base.ops.filter(o => DIDX.get(o.date) > iT - 5).map(o => ({ x: o.ppv, y: o.tna })), pointRadius: 2, backgroundColor: 'rgba(170,178,189,.35)', order: 9 });
     if (q) {
-      ds.push({ type: 'line', label: 'p25', data: line(p => base.f(p) + q.p25 / 100, 7, xMax), borderWidth: 0, pointRadius: 0, fill: false, order: 8 });
-      ds.push({ type: 'line', label: 'p75', data: line(p => base.f(p) + q.p75 / 100, 7, xMax), borderWidth: 0, pointRadius: 0, fill: '-1', backgroundColor: rgbaHex(E.c, .2), order: 8 });
-      ds.push({ type: 'line', label: 'justa', data: line(p => base.f(p) + q.med / 100, 7, xMax), borderColor: rgbaHex(E.c, .9), borderDash: [3, 3], borderWidth: 1.2, pointRadius: 0, order: 7 });
+      ds.push({ type: 'line', label: 'p25', data: xs.map((p, k) => ({ x: p, y: band[k][0] })), borderWidth: 0, pointRadius: 0, fill: false, order: 8 });
+      ds.push({ type: 'line', label: 'p75', data: xs.map((p, k) => ({ x: p, y: band[k][1] })), borderWidth: 0, pointRadius: 0, fill: '-1', backgroundColor: rgbaHex(E.c, .22), order: 8 });
+      ds.push({ type: 'line', label: 'justa', data: line(p => base.f(p) + S.at(p).med / 100, 7, xMax), borderColor: rgbaHex(E.c, .95), borderDash: [4, 3], borderWidth: 1.5, pointRadius: 0, order: 7 });
     }
-    ds.push({ type: 'line', label: 'Base', data: line(base.f, 7, Math.max(hi, 7)), borderColor: '#e9ecef', borderWidth: 2, pointRadius: 0, order: 6 });
+    ds.push({ type: 'line', label: 'Base', data: line(base.f, 7, Math.max(hi, 7)), borderColor: '#e9ecef', borderWidth: 2.2, pointRadius: 0, order: 6 });
     ds.push({ type: 'line', label: 'Base extrapolada', data: line(base.f, Math.max(hi, 7), xMax), borderColor: '#e0a84a', borderDash: [6, 4], borderWidth: 2, pointRadius: 0, order: 6 });
   }
   [...W].reverse().forEach((e, k) => {
-    ds.push({ type: 'bubble', label: e.n, data: e.S.pts.map(x => ({ x: x.o.ppv, y: x.o.tna, r: Math.min(14, Math.max(2.5, Math.sqrt(x.o.monto / 1e9) * 2.2)), _a: x.age, _o: x.o, _s: x.s })),
-      backgroundColor: c => rgbaHex(e.c, c.raw?._a === 0 ? 1 : c.raw?._a < 5 ? .7 : .28), borderColor: c => c.raw?._a === 0 ? '#fff' : 'transparent', borderWidth: 1.5, order: 2 + k });
+    ds.push({ type: 'bubble', label: e.n, data: e.S.pts.map(x => ({ x: x.o.ppv, y: x.o.tna, r: Math.min(12, Math.max(2.5, Math.sqrt(x.o.monto / 1e9) * 2)), _a: x.age, _o: x.o, _s: x.s })),
+      backgroundColor: c => rgbaHex(e.c, c.raw?._a < 5 ? .85 : .16), borderColor: c => c.raw?._a === 0 ? '#fff' : 'transparent', borderWidth: 1.5, order: 2 + k });
   });
-  legend('eCurveLeg', [{ l: 'Base ' + E.B.label, c: '#e9ecef', cls: 'ln' }, { l: 'Extrapolada', c: '#e0a84a', cls: 'ln' }, ...(q ? [{ l: E.n.slice(0, 24) + ': base + spread p25–p75', c: rgbaHex(E.c, .35) }] : []), ...W.map(e => ({ l: e.n.slice(0, 30) + (e.B.label !== E.B?.label ? ` (vs. ${e.B.label})` : ''), c: e.c, cls: 'cir' })), { l: 'prints base (5 ruedas)', c: '#4a515c', cls: 'cir' }]);
+  legend('eCurveLeg', [{ l: 'Base de hoy', c: '#e9ecef', cls: 'ln' }, ...(q ? [{ l: 'Tasa estimada ' + E.n.slice(0, 24), c: E.c, cls: 'dash' }, { l: 'Rango habitual', c: rgbaHex(E.c, .35) }] : []), ...W.map(e => ({ l: e.n.slice(0, 30) + (e.B.label !== E.B?.label ? ` (vs. ${e.B.label})` : ''), c: e.c, cls: 'cir' }))]);
   const extPlug = (getPx, txt) => ({ id: 'ext', beforeDatasetsDraw(ch) { const px = getPx(ch); if (px == null) return; const { ctx, chartArea: a } = ch; if (px >= a.right) return; ctx.save(); ctx.fillStyle = 'rgba(224,168,74,.06)'; ctx.fillRect(Math.max(px, a.left), a.top, a.right - Math.max(px, a.left), a.bottom - a.top); ctx.fillStyle = '#e0a84a'; ctx.font = "600 10px 'JetBrains Mono',monospace"; ctx.fillText(txt, Math.max(px, a.left) + 8, a.top + 14); ctx.restore(); } });
   mkChart('eCurve', { data: { datasets: ds }, options: {
-    scales: { x: { ...AXX, type: 'linear', min: 0, max: xMax, ticks: { stepSize: 30 }, title: { display: true, text: 'plazo (días)', color: '#717a86' } }, y: { ...AX, min: yLo, max: yHi, ticks: { callback: v => v + '%' } } },
-    plugins: { tooltip: { filter: i => i.raw?._o, callbacks: { title: () => '', label: i => { const o = i.raw._o; return ` ${o.emp.slice(0, 26)} · ${fmtDs(o.date)} · ${o.ppv} d · ${fmtN(o.tna, 2)}% · ${sgnPb(i.raw._s)} pb · ${fmtMonto(o.monto)}`; } } } } },
+    scales: { x: { ...AXX, type: 'linear', min: 0, max: xMax, ticks: { stepSize: xMax > 240 ? 60 : 30 }, title: { display: true, text: 'plazo (días)', color: '#717a86' } }, y: { ...AX, min: yLo, max: yHi, ticks: { callback: v => fmtN(v, yHi - yLo <= 4 ? 1 : 0) + '%' } } },
+    plugins: { tooltip: { filter: i => i.raw?._o, callbacks: { title: () => '', label: i => { const o = i.raw._o; return ` ${o.emp.slice(0, 26)} · ${fmtDs(o.date)} · ${o.ppv} d · ${fmtN(o.tna, 2)}% · ${sgnPb(i.raw._s)} pb vs. base · ${fmtMonto(o.monto)}`; } } } } },
     plugins: base ? [extPlug(ch => hi >= 99999 ? null : ch.scales.x.getPixelForValue(hi), 'BASE EXTRAPOLADA')] : [] });
-
-  // ── Spread por tramo ──
-  const vsL = e => e.B.label !== E.B?.label ? ` (vs. ${e.B.label})` : '';
-  legend('eSpreadLeg', [...W.map(e => ({ l: e.n.slice(0, 30) + vsL(e) + ' p25–p75', c: rgbaHex(e.c, .6) })), { l: 'mediana', c: '#fff', cls: 'ln' }, { l: '◆ último print', c: 'transparent' }]);
-  const exIdx = TR_HI.findIndex(h => h > hi);
-  const vals = W.flatMap(e => e.S.tr.filter(Boolean).flatMap(v => [v.p25, v.p75, v.last]));
-  const sLo = Math.floor(Math.min(0, ...vals) / 50) * 50 - 25, sHi = Math.ceil(Math.max(0, ...vals) / 50) * 50 + 25;
-  mkChart('eSpread', { type: 'bar', data: { labels: TRAMOS.map((t, i) => i >= exIdx && exIdx >= 0 ? [t + ' d', 'extrap.'] : [t + ' d', '']), datasets: W.map(e => ({ label: e.n, data: e.S.tr.map(v => v ? [v.p25, v.p75] : null), _tr: e.S.tr, _c: e.c, backgroundColor: rgbaHex(e.c, .55), borderRadius: 2, barPercentage: .8, categoryPercentage: .7 })) },
-    options: { scales: { x: { ...AXX, ticks: { color: c => exIdx >= 0 && c.index >= exIdx ? '#e0a84a' : '#717a86' } }, y: { ...AX, min: sLo, max: sHi, ticks: { callback: v => (v > 0 ? '+' : '') + v }, grid: { color: c => c.tick.value === 0 ? 'rgba(255,255,255,.35)' : 'rgba(255,255,255,.05)' } } },
-      plugins: { tooltip: { filter: i => i.raw, callbacks: { label: i => { const v = i.dataset._tr[i.dataIndex]; return ` ${i.dataset.label.slice(0, 24)}: p25 ${sgnPb(v.p25)} · med ${sgnPb(v.med)} · p75 ${sgnPb(v.p75)} · último ${sgnPb(v.last)} pb · n=${v.n}`; } } } } },
-    plugins: [extPlug(ch => { if (exIdx < 0) return null; const x = ch.scales.x; const step = x.getPixelForValue(1) - x.getPixelForValue(0); return x.getPixelForValue(exIdx) - step / 2; }, 'BASE EXTRAPOLADA'),
-      { id: 'marks', afterDatasetsDraw(ch) { const { ctx, scales: { y } } = ch; ctx.save(); ch.data.datasets.forEach((d, di) => { const meta = ch.getDatasetMeta(di); d._tr.forEach((v, i) => { if (!v) return; const el = meta.data[i]; const w = el.width, cx = el.x;
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - w / 2, y.getPixelForValue(v.med)); ctx.lineTo(cx + w / 2, y.getPixelForValue(v.med)); ctx.stroke();
-        const ly = y.getPixelForValue(v.last); ctx.fillStyle = '#fff'; ctx.strokeStyle = d._c; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx, ly - 6); ctx.lineTo(cx + 6, ly); ctx.lineTo(cx, ly + 6); ctx.lineTo(cx - 6, ly); ctx.closePath(); ctx.fill(); ctx.stroke();
-        ctx.fillStyle = '#aab2bd'; ctx.font = "10px 'JetBrains Mono',monospace"; ctx.textAlign = 'center'; ctx.fillText('n=' + v.n, cx, Math.min(y.getPixelForValue(v.p75), ly) - 8); }); }); ctx.restore(); } }] });
+  $('eZoom').onclick = ev => { const b = ev.target.closest('[data-z]'); if (b) { EMP.zoom = b.dataset.z === '1'; renderBenchCharts(ents, today); document.querySelectorAll('#eZoom button').forEach(x => x.classList.toggle('on', x === b)); } };
+  $('eShowBase').onchange = ev => { EMP.showBase = ev.target.checked; renderBenchCharts(ents, today); };
+  renderTramoTable(W, today);
+}
+// ── Tabla: tasa justa por tramo ──
+function renderTramoTable(W, today) {
+  if (!W.length) { $('eTrTab').innerHTML = ''; $('eTr').innerHTML = '<tbody><tr><td class="empty">Sin historia suficiente.</td></tr></tbody>'; return; }
+  if (EMP.trTab >= W.length) EMP.trTab = 0;
+  $('eTrTab').innerHTML = W.length > 1 ? W.map((e, i) => `<button data-t="${i}" class="${i === EMP.trTab ? 'on' : ''}"><i class="sw" style="background:${e.c}"></i>${esc(e.n.slice(0, 18))}</button>`).join('') : '';
+  $('eTrTab').onclick = ev => { const b = ev.target.closest('[data-t]'); if (b) { EMP.trTab = +b.dataset.t; renderTramoTable(W, today); } };
+  const e = W[EMP.trTab], f = e.base?.f;
+  if (!f) { $('eTr').innerHTML = '<tbody><tr><td class="empty">Sin base para hoy.</td></tr></tbody>'; return; }
+  const rows = TRAMOS.map((t, i) => {
+    const v = e.S.tr[i], mid = TR_MID[i], sp = e.S.at(mid), ext = TR_HI[i] > e.hi;
+    const fair = f(mid) + sp.med / 100, lo = f(mid) + sp.p25 / 100, hi2 = f(mid) + sp.p75 / 100;
+    const lastPt = e.S.pts.filter(x => trIdx(x.o.ppv) === i).sort((a, b) => b.o.date.localeCompare(a.o.date) || b.o.monto - a.o.monto)[0];
+    const dv = lastPt ? lastPt.s - e.S.at(lastPt.o.ppv).med : NaN;
+    const n = v ? v.n : (lastPt ? e.S.pts.filter(x => trIdx(x.o.ppv) === i).length : 0);
+    const thin = n < 3;
+    return `<tr class="${ext ? 'ext' : ''}${thin ? ' thin' : ''}"><td class="l">${t} d${ext ? ' <span class="ex">extrap.</span>' : ''}<div class="mut" style="margin:2px 0 0">${n ? n + ' prints' : 'sin prints'}</div></td>
+      <td><b>${fmtN(fair, 2)}%</b></td><td>${fmtN(lo, 2)} – ${fmtN(hi2, 2)}%</td>
+      <td>${lastPt ? `${fmtN(lastPt.o.tna, 2)}%<div class="mut" style="margin:2px 0 0">${fmtDs(lastPt.o.date)} · ${lastPt.o.ppv} d</div>` : '—'}</td>
+      <td>${isFinite(dv) ? `${sgnPb(dv)} pb` : '—'}</td></tr>`;
+  });
+  $('eTr').innerHTML = `<thead><tr><th class="l">Tramo</th><th>Tasa estimada</th><th>Rango habitual</th><th>Último print</th><th>vs. estimada</th></tr></thead><tbody>${rows.join('')}</tbody>`;
 }
 function renderCalc(ents, today) {
   const W = ents.filter(e => e.S && e.S.all && e.base);
   if (!W.length) { $('eCalc').innerHTML = '<div class="empty">Sin base suficiente para calcular: el benchmark no tiene prints en las últimas ruedas o el emisor no tiene historia en el período.</div>'; return; }
   if (CALC.who >= W.length) CALC.who = 0;
   $('eCalc').innerHTML = `<div class="calc"><div class="cin">
-      <label><span class="fl">Responsable</span><select class="sel" id="kE">${W.map((e, i) => `<option value="${i}"${i === CALC.who ? ' selected' : ''}>${esc(e.n)}</option>`).join('')}</select></label>
-      <label><span class="fl">Plazo (días)</span><input class="inp" id="kP" type="number" min="1" max="720" value="${CALC.plazo}"></label>
-      <div><span class="fl">Tasa justa (TNA)</span><div class="kbig" id="kF">—</div><div class="cs" id="kR"></div></div>
-    </div><div style="min-width:0"><div class="cres" id="kRes"></div><div class="kwarn" id="kW"></div>
-      <div class="fl" style="margin:14px 0 6px">Últimos prints llevados a hoy</div><div class="tbl-wrap"><table id="kT"></table></div>
-      <div class="hint">"Llevado a hoy" = base de hoy a ese plazo + el spread que tuvo ese print. "vs. justa" = cuánto se aparta de la tasa justa de hoy a ese plazo (negativo = caro para el comprador).</div></div></div>`;
+      <div class="cin2"><label><span class="fl">Responsable</span><select class="sel" id="kE">${W.map((e, i) => `<option value="${i}"${i === CALC.who ? ' selected' : ''}>${esc(e.n)}</option>`).join('')}</select></label>
+      <label><span class="fl">Plazo (días)</span><input class="inp" id="kP" type="number" min="1" max="720" value="${CALC.plazo}"></label></div>
+      <div><span class="fl">Tasa estimada (TNA)</span><div class="kbig" id="kF">—</div><div class="cs" id="kR"></div></div>
+      <div class="cres" id="kRes"></div><div class="kwarn" id="kW"></div>
+    </div><div style="min-width:0"><div class="fl" style="margin:0 0 6px">Últimos prints llevados a hoy</div><div class="tbl-wrap kscroll"><table id="kT"></table></div>
+      <div class="hint">"Llevado a hoy" = base de hoy a ese plazo + el spread que tuvo ese print. "vs. estimada" = diferencia contra la tasa estimada de hoy a ese plazo.</div></div></div>`;
   const run = () => {
     const e = W[CALC.who], p = Math.max(1, Math.min(720, +CALC.plazo || 60)), q = e.S.all, f = e.base.f;
-    const b = f(p), fair = b + q.med / 100, lo = b + q.p25 / 100, hi2 = b + q.p75 / 100;
+    const sp = e.S.at(p), b = f(p), fair = b + sp.med / 100, lo = b + sp.p25 / 100, hi2 = b + sp.p75 / 100;
     $('kF').textContent = fmtN(fair, 2) + '%';
     $('kR').textContent = `rango ${fmtN(lo, 2)}% – ${fmtN(hi2, 2)}% · TEA ${fmtN(tea(fair, p), 2)}%`;
-    $('kRes').innerHTML = [['Base ' + e.B.label, fmtN(b, 2) + '%', p > e.hi ? 'extrapolada' : 'a ' + p + ' d'], ['Spread mediano', sgnPb(q.med) + ' pb', q.n + ' prints · período'], ['Spread p25 / p75', `${sgnPb(q.p25)} / ${sgnPb(q.p75)}`, 'pb'], ['Como comprador', '≥ ' + fmtN(fair, 2) + '%', 'pedir la mediana o más']]
-      .map(r => `<div class="kpi"><div class="kl">${esc(r[0])}</div><div class="kv" style="font-size:20px">${r[1]}</div><div class="kd">${r[2]}</div></div>`).join('');
+    $('kRes').innerHTML = [['Base' + (p > e.hi ? ' (extrap.)' : ''), fmtN(b, 2) + '%'], ['Spread mediano', sgnPb(sp.med) + ' pb'], ['Spread p25 / p75', `${sgnPb(sp.p25)} / ${sgnPb(sp.p75)} pb`], ['Fuente spread', sp.src === 'tramo' ? 'tramo del plazo' : 'general']]
+      .map(r => `<div><span>${esc(r[0])}</span><b>${r[1]}</b></div>`).join('');
     $('kW').textContent = p > e.hi ? '⚠ A este plazo el benchmark casi no opera: la base es extrapolada y el resultado es menos confiable.' : '';
     const g = new Map(); e.S.pts.forEach(x => { const k = x.o.date + '|' + x.o.ppv + '|' + x.o.tna; const y = g.get(k); if (y) y.m += x.o.monto; else g.set(k, { o: x.o, s: x.s, m: x.o.monto }); });
-    const L = [...g.values()].sort((a, b2) => b2.o.date.localeCompare(a.o.date) || b2.m - a.m).slice(0, 8);
-    $('kT').innerHTML = '<thead><tr><th class="l">Fecha</th><th>Plazo</th><th>TNA</th><th>Monto</th><th>Spread</th><th>Llevado a hoy</th><th>vs. justa</th></tr></thead><tbody>' + L.map(x => { const now = f(x.o.ppv) + x.s / 100, dd = (x.s - q.med); return `<tr><td class="l">${fmtD(x.o.date)}</td><td>${x.o.ppv} d</td><td>${fmtN(x.o.tna, 2)}%</td><td>${fmtMonto(x.m)}</td><td>${sgnPb(x.s)} pb</td><td>${fmtN(now, 2)}%</td><td style="color:${dd < 0 ? 'var(--down)' : 'var(--up)'}">${sgnPb(dd)} pb</td></tr>`; }).join('') + '</tbody>';
+    const L = [...g.values()].sort((a, b2) => b2.o.date.localeCompare(a.o.date) || b2.m - a.m).slice(0, 40);
+    $('kT').innerHTML = '<thead><tr><th class="l">Fecha</th><th>Plazo</th><th>TNA</th><th>Monto</th><th>Spread</th><th>Llevado a hoy</th><th>vs. estimada</th></tr></thead><tbody>' + L.map(x => { const now = f(x.o.ppv) + x.s / 100, dd = (x.s - e.S.at(x.o.ppv).med); return `<tr><td class="l">${fmtD(x.o.date)}</td><td>${x.o.ppv} d</td><td>${fmtN(x.o.tna, 2)}%</td><td>${fmtMonto(x.m)}</td><td>${sgnPb(x.s)} pb</td><td>${fmtN(now, 2)}%</td><td style="color:${dd < 0 ? 'var(--down)' : 'var(--up)'}">${sgnPb(dd)} pb</td></tr>`; }).join('') + '</tbody>';
   };
   $('kE').onchange = ev => { CALC.who = +ev.target.value; run(); };
   $('kP').oninput = ev => { CALC.plazo = +ev.target.value; run(); };
