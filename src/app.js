@@ -735,10 +735,14 @@ function entSpread(E, B, curves, today) {
   const pts = E.r.filter(o => B.same(o) && o.ppv >= 7).map(o => { const c = curves.get(o.date); if (!c) return null; const age = Math.max(0, iT - DIDX.get(o.date)); return { o, s: (o.tna - c.f(o.ppv)) * 100, w: o.monto * Math.pow(.5, age / HALF_LIFE), age }; }).filter(Boolean);
   const q = (a, p) => { const s = [...a].sort((x, y) => x.s - y.s), W = s.reduce((t, x) => t + x.w, 0); let c = 0; for (const x of s) { c += x.w; if (c >= p * W) return x.s; } return NaN; };
   const Q = a => a.length ? { p25: q(a, .25), med: q(a, .5), p75: q(a, .75), n: a.length } : null;
-  const tr = TR_HI.map((_, i) => { const a = pts.filter(x => trIdx(x.o.ppv) === i); if (a.length < 3) return null; const last = [...a].sort((x, y) => y.o.date.localeCompare(x.o.date) || y.o.monto - x.o.monto)[0]; return { ...Q(a), last: last.s }; });
+  const tr = TR_HI.map((_, i) => { const a = pts.filter(x => trIdx(x.o.ppv) === i); if (a.length < 3) return null; const last = [...a].sort((x, y) => y.o.date.localeCompare(x.o.date) || y.o.monto - x.o.monto)[0]; const W = a.reduce((s, x) => s + x.w, 0); return { ...Q(a), last: last.s, x: a.reduce((s, x) => s + x.o.ppv * x.w, 0) / W, dias: new Set(a.map(x => x.o.date)).size }; });
   // Spread según plazo: interpola entre tramos con ≥ MIN_TR_SPR prints; si no hay, usa el general
-  const all = Q(pts), knots = tr.map((v, i) => v && v.n >= MIN_TR_SPR ? { x: TR_MID[i], v } : null).filter(Boolean);
-  const at = p => {
+  const all = Q(pts), knots = tr.map(v => v && v.n >= MIN_TR_SPR ? { x: v.x, v } : null).filter(Boolean);   // nodo = plazo promedio real de los prints del tramo
+  // rango mínimo: si un tramo tiene prints casi idénticos (p. ej. todos del mismo día), usa al menos la mitad del rango general
+  const hMin = all ? (all.p75 - all.p25) / 4 : 0;
+  const widen = r => ({ ...r, p25: Math.min(r.p25, r.med - hMin), p75: Math.max(r.p75, r.med + hMin) });
+  const at = p => widen(at0(p));
+  const at0 = p => {
     if (!knots.length) return { ...all, src: 'general' };
     if (p <= knots[0].x) return { ...knots[0].v, src: 'tramo' };
     if (p >= knots[knots.length - 1].x) return { ...knots[knots.length - 1].v, src: 'tramo' };
@@ -791,7 +795,7 @@ function renderEmisores() {
         <div class="ch" style="margin:8px 0 0"><label class="chk"><input type="checkbox" id="eShowBase"${EMP.showBase ? ' checked' : ''}> mostrar prints de ${esc(B0.label.toLowerCase())}</label><span class="cs" id="eOut"></span></div>
         ${B0.note ? `<div class="kwarn" style="margin:6px 0 0">${esc(B0.note)} no tiene prints suficientes en las últimas ruedas: se usa ${esc(B0.label)} como base.</div>` : ''}<div class="hint">Línea blanca: curva base de hoy. Banda: dónde debería operar ${esc(E.n.slice(0, 30))} según su historia (base + su spread p25–p75 de cada plazo). Puntos en color: prints de las últimas 5 ruedas (anillo = último día); tenues: anteriores. <span class="ex">EXTRAPOLADA</span> = plazos con pocos prints en la base.</div></div>
       <div class="card"><div class="ch"><div class="ct">Tasa estimada por tramo</div><div class="tools"><div class="seg" id="eTrTab"></div><button class="ico" data-csv="eTr">CSV</button></div></div><div class="tbl-wrap"><table id="eTr" class="trt"></table></div>
-        <div class="hint">Tasa estimada = base de hoy al plazo medio del tramo + spread mediano del emisor en ese tramo (rango habitual: p25–p75). Último print: la operación más reciente del tramo. "vs. estimada": diferencia entre su spread y el mediano (negativo = rindió menos de lo habitual). Se excluyen prints de menos de 7 días. Período y moneda según los filtros; los prints recientes pesan más.</div></div>
+        <div class="hint">Tasa estimada = base de hoy al plazo promedio de los prints del tramo + spread mediano del emisor en ese tramo (rango habitual: p25–p75). Último print: la operación más reciente del tramo. "vs. estimada": diferencia entre su spread y el mediano (negativo = rindió menos de lo habitual). Se excluyen prints de menos de 7 días. Período y moneda según los filtros; los prints recientes pesan más.</div></div>
     </div>
     <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Calculadora de tasa</div><span class="cs">tasa estimada = base de hoy + spread mediano de ese plazo</span></div><div id="eCalc"></div></div></div>
     <div class="row r-333">
@@ -887,7 +891,7 @@ function renderBenchCharts(ents, today) {
   legend('eCurveLeg', [{ l: 'Base de hoy', c: '#e9ecef', cls: 'ln' }, ...(q ? [{ l: 'Tasa estimada ' + E.n.slice(0, 24), c: E.c, cls: 'dash' }, { l: 'Rango habitual', c: rgbaHex(E.c, .35) }] : []), ...W.map(e => ({ l: e.n.slice(0, 30) + (e.B.label !== E.B?.label ? ` (vs. ${e.B.label})` : ''), c: e.c, cls: 'cir' }))]);
   const extPlug = (getPx, txt) => ({ id: 'ext', beforeDatasetsDraw(ch) { const px = getPx(ch); if (px == null) return; const { ctx, chartArea: a } = ch; if (px >= a.right) return; ctx.save(); ctx.fillStyle = 'rgba(224,168,74,.06)'; ctx.fillRect(Math.max(px, a.left), a.top, a.right - Math.max(px, a.left), a.bottom - a.top); ctx.fillStyle = '#e0a84a'; ctx.font = "600 10px 'JetBrains Mono',monospace"; ctx.fillText(txt, Math.max(px, a.left) + 8, a.top + 14); ctx.restore(); } });
   mkChart('eCurve', { data: { datasets: ds }, options: {
-    scales: { x: { ...AXX, type: 'linear', min: 0, max: xMax, ticks: { stepSize: xMax > 240 ? 60 : 30 }, title: { display: true, text: 'plazo (días)', color: '#717a86' } }, y: { ...AX, min: yLo, max: yHi, ticks: { callback: v => fmtN(v, yHi - yLo <= 4 ? 1 : 0) + '%' } } },
+    scales: { x: { ...AXX, type: 'linear', min: 0, max: xMax, ticks: { stepSize: xMax > 240 ? 60 : 30 }, title: { display: true, text: 'plazo (días)', color: '#717a86' } }, y: { ...AX, min: yLo, max: yHi, ticks: { callback: v => fmtN(v, Number.isInteger(v) ? 0 : 1) + '%' } } },
     plugins: { tooltip: { filter: i => i.raw?._o, callbacks: { title: () => '', label: i => { const o = i.raw._o; return ` ${o.emp.slice(0, 26)} · ${fmtDs(o.date)} · ${o.ppv} d · ${fmtN(o.tna, 2)}% · ${sgnPb(i.raw._s)} pb vs. base · ${fmtMonto(o.monto)}`; } } } } },
     plugins: base ? [extPlug(ch => hi >= 99999 ? null : ch.scales.x.getPixelForValue(hi), 'BASE EXTRAPOLADA')] : [] });
   $('eZoom').onclick = ev => { const b = ev.target.closest('[data-z]'); if (b) { EMP.zoom = b.dataset.z === '1'; renderBenchCharts(ents, today); document.querySelectorAll('#eZoom button').forEach(x => x.classList.toggle('on', x === b)); } };
@@ -903,14 +907,14 @@ function renderTramoTable(W, today) {
   const e = W[EMP.trTab], f = e.base?.f;
   if (!f) { $('eTr').innerHTML = '<tbody><tr><td class="empty">Sin base para hoy.</td></tr></tbody>'; return; }
   const rows = TRAMOS.map((t, i) => {
-    const v = e.S.tr[i], mid = TR_MID[i], sp = e.S.at(mid), ext = TR_HI[i] > e.hi;
+    const v = e.S.tr[i], mid = v ? Math.round(v.x) : TR_MID[i], sp = e.S.at(mid), ext = TR_HI[i] > e.hi;
     const fair = f(mid) + sp.med / 100, lo = f(mid) + sp.p25 / 100, hi2 = f(mid) + sp.p75 / 100;
     const lastPt = e.S.pts.filter(x => trIdx(x.o.ppv) === i).sort((a, b) => b.o.date.localeCompare(a.o.date) || b.o.monto - a.o.monto)[0];
     const dv = lastPt ? lastPt.s - e.S.at(lastPt.o.ppv).med : NaN;
     const n = v ? v.n : (lastPt ? e.S.pts.filter(x => trIdx(x.o.ppv) === i).length : 0);
     const thin = n < 3;
-    return `<tr class="${ext ? 'ext' : ''}${thin ? ' thin' : ''}"><td class="l">${t} d${ext ? ' <span class="ex">extrap.</span>' : ''}<div class="mut" style="margin:2px 0 0">${n ? n + ' prints' : 'sin prints'}</div></td>
-      <td><b>${fmtN(fair, 2)}%</b></td><td>${fmtN(lo, 2)} – ${fmtN(hi2, 2)}%</td>
+    return `<tr class="${ext ? 'ext' : ''}${thin ? ' thin' : ''}"><td class="l">${t} d${ext ? ' <span class="ex">extrap.</span>' : ''}<div class="mut" style="margin:2px 0 0">${n ? n + ' prints' + (v ? ' · ' + v.dias + (v.dias === 1 ? ' día' : ' días') : '') : 'sin prints'}</div></td>
+      <td><b>${fmtN(fair, 2)}%</b><div class="mut" style="margin:2px 0 0">a ${mid} d</div></td><td>${fmtN(lo, 2)} – ${fmtN(hi2, 2)}%</td>
       <td>${lastPt ? `${fmtN(lastPt.o.tna, 2)}%<div class="mut" style="margin:2px 0 0">${fmtDs(lastPt.o.date)} · ${lastPt.o.ppv} d</div>` : '—'}</td>
       <td>${isFinite(dv) ? `${sgnPb(dv)} pb` : '—'}</td></tr>`;
   });
