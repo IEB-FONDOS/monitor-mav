@@ -14,7 +14,8 @@ const TIERS_GID = '1857230599';            // pestaña "tiers" publicada como CS
 const RT_REFRESH_MS = 5 * 60 * 1000;
 // Benchmark (Emisores)
 const BENCH_WIN = { ars: 5, usd: 20 };   // ruedas para armar la curva base
-const HALF_LIFE = 10;                    // vida media (ruedas) del peso por antigüedad en el spread histórico
+const HALF_LIFE = 10;
+const EST_HL = 5;                        // vida media (ruedas) de la EWMA del spread para la tasa estimada · elegida por backtest (oct-26)                    // vida media (ruedas) del peso por antigüedad en el spread histórico
 const OUT_PP = 2.5;                      // descarta prints a más de ±2,5 pp de la curva base
 const MIN_TR = 5;                        // mínimo de prints por tramo para no considerar la base extrapolada
 const TR_HI = [30, 60, 90, 120, 150, 180, 99999];
@@ -75,7 +76,7 @@ const charts = {};
 const F = { mons: ['$'], seg: 'ALL', cat: 'ALL', tipo: 'ALL', calif: 'ALL', per: '1M', desde: '', hasta: '', tramo: null };
 let view = 'mercado', hmMode = 'cat', vEst = 'ALL', vSearch = '', vResMode = 'seg', vRef = 5;
 const vOpen = new Set();
-let EMP = { main: null, cmp: [], ref: 'sob', zoom: true, showBase: false, trTab: 0 };
+let EMP = { rvT: null, main: null, cmp: [], ref: 'sob', zoom: true, showBase: false, trTab: 0 };
 let REF = null, DIDX = new Map(), SOB = new Map(), SOB_DATES = [];
 const CALC = { who: 0, plazo: 60 };
 let rtTimer = null;
@@ -799,15 +800,25 @@ function validHi(ops, min = MIN_TR) { const c = TR_HI.map((_, i) => ops.filter(o
 function entSpread(E, B, curves, today) {
   const iT = DIDX.get(today);
   const pts = E.r.filter(o => B.same(o) && o.ppv >= 7).map(o => { const c = curves.get(o.date); if (!c) return null; const age = Math.max(0, iT - DIDX.get(o.date)); return { o, s: (o.tna - c.f(o.ppv)) * 100, w: o.monto * Math.pow(.5, age / HALF_LIFE), age }; }).filter(Boolean);
-  const q = (a, p) => { const s = [...a].sort((x, y) => x.s - y.s), W = s.reduce((t, x) => t + x.w, 0); let c = 0; for (const x of s) { c += x.w; if (c >= p * W) return x.s; } return NaN; };
-  const Q = a => a.length ? { p25: q(a, .25), med: q(a, .5), p75: q(a, .75), n: a.length } : null;
-  const tr = TR_HI.map((_, i) => { const a = pts.filter(x => trIdx(x.o.ppv) === i); if (a.length < 3) return null; const last = [...a].sort((x, y) => y.o.date.localeCompare(x.o.date) || y.o.monto - x.o.monto)[0]; const W = a.reduce((s, x) => s + x.w, 0); return { ...Q(a), last: last.s, x: a.reduce((s, x) => s + x.o.ppv * x.w, 0) / W, dias: new Set(a.map(x => x.o.date)).size }; });
-  // Spread según plazo: interpola entre tramos con ≥ MIN_TR_SPR prints; si no hay, usa el general
-  const all = Q(pts), knots = tr.map(v => v && v.n >= MIN_TR_SPR ? { x: v.x, v } : null).filter(Boolean);   // nodo = plazo promedio real de los prints del tramo
-  // rango mínimo: si un tramo tiene prints casi idénticos (p. ej. todos del mismo día), usa al menos la mitad del rango general
-  const hMin = all ? (all.p75 - all.p25) / 4 : 0;
+  // Pendiente del spread del emisor según plazo: s ≈ a + b·ln(plazo) (ponderado por monto). Sirve para llevar cada print a un plazo de referencia.
+  let slope = 0;
+  if (pts.length >= 8) { let W = 0, sx = 0, sy = 0, sxx = 0, sxy = 0; pts.forEach(x => { const w = x.o.monto, l = Math.log(x.o.ppv); W += w; sx += w * l; sy += w * x.s; sxx += w * l * l; sxy += w * l * x.s; }); const den = W * sxx - sx * sx; if (den > 1e-9) slope = (W * sxy - sx * sy) / den; }
+  // Serie diaria a plazo constante T: un dato por día = spread promedio (por monto) de los prints del día llevados a T
+  const daily = (T, sel) => { const g = new Map(); pts.filter(sel).forEach(x => { const adj = x.s + slope * (Math.log(T) - Math.log(x.o.ppv)); const k = x.o.date; const y = g.get(k) || { date: k, sw: 0, w: 0, n: 0, last: null }; y.sw += adj * x.o.monto; y.w += x.o.monto; y.n++; if (!y.last || x.o.monto > y.last.monto) y.last = x.o; g.set(k, y); });
+    return [...g.values()].map(y => ({ date: y.date, s: y.sw / y.w, n: y.n, o: y.last, age: iT - DIDX.get(y.date) })).sort((a, b) => a.date.localeCompare(b.date)); };
+  const qs = (v, p) => { const s = [...v].sort((a, b) => a - b); if (!s.length) return NaN; const k = (s.length - 1) * p, f = Math.floor(k); return s[f] + (s[Math.min(f + 1, s.length - 1)] - s[f]) * (k - f); };
+  const stats = ser => { if (!ser.length) return null; const v = ser.map(x => x.s), last = ser[ser.length - 1];
+    const rec = ser.filter(x => x.age <= 5).map(x => x.s), old = ser.filter(x => x.age >= 17 && x.age <= 27).map(x => x.s), mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+    let ew = 0, ww = 0; ser.forEach(x => { const w = Math.pow(.5, x.age / EST_HL); ew += w * x.s; ww += w; }); const est = ew / ww, medP = qs(v, .5);
+    // med = spread estimado (EWMA); el rango conserva la dispersión del período alrededor de la estimación
+    return { med: est, medP, p25: est - (medP - qs(v, .25)), p75: est + (qs(v, .75) - medP), n: ser.length, prints: ser.reduce((s, x) => s + x.n, 0), last, pct: ser.length >= 5 ? Math.round(v.filter(x => x <= last.s).length / v.length * 100) : NaN, d1m: rec.length && old.length ? mean(rec) - mean(old) : NaN }; };
+  const lo = [7, 31, 61, 91, 121, 151, 181];
+  const tr = TR_HI.map((h, i) => { const T = TR_MID[i], ser = daily(T, x => x.o.ppv >= lo[i] && x.o.ppv <= h), st = stats(ser); return st && ser.length >= 1 ? { ...st, x: T, ser, dias: ser.length } : null; });
+  const Tall = Math.round(pts.reduce((s, x) => s + x.o.ppv * x.o.monto, 0) / (pts.reduce((s, x) => s + x.o.monto, 0) || 1)) || 60;
+  const all = stats(daily(Tall, () => true));
+  const knots = tr.map(v => v && v.dias >= 3 ? { x: v.x, v } : null).filter(Boolean);
+  const hMin = all && isFinite(all.p75) ? (all.p75 - all.p25) / 4 : 0;
   const widen = r => ({ ...r, p25: Math.min(r.p25, r.med - hMin), p75: Math.max(r.p75, r.med + hMin) });
-  const at = p => widen(at0(p));
   const at0 = p => {
     if (!knots.length) return { ...all, src: 'general' };
     if (p <= knots[0].x) return { ...knots[0].v, src: 'tramo' };
@@ -816,7 +827,8 @@ function entSpread(E, B, curves, today) {
     const mix = k => a.v[k] + (b.v[k] - a.v[k]) * w;
     return { p25: mix('p25'), med: mix('med'), p75: mix('p75'), n: a.v.n + b.v.n, src: 'tramo' };
   };
-  return { pts, all, tr, at, byOp: new Map(pts.map(x => [x.o, x.s])) };
+  const at = p => widen(at0(p));
+  return { pts, all, tr, at, daily, slope, stats, byOp: new Map(pts.map(x => [x.o, x.s])) };
 }
 const rgbaHex = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; };
 const sgnPb = v => { if (!isFinite(v)) return '—'; const r = Math.round(v); return (r >= 0 ? '+' : '−') + fmtN(Math.abs(r), 0); };
@@ -860,10 +872,14 @@ function renderEmisores() {
       <div class="card"><div class="ch"><div class="ct">Curva vs. ${esc(B0.label)}</div><div class="tools"><span class="cs">${B0.sob ? 'cierre ' + fmtD(E.base?.date || today) + ' · ' + (E.base?.n || 0) + ' letras' : 'base al ' + fmtD(today) + ' · ' + (E.base?.win || B0.win) + ' ruedas'}</span><div class="seg" id="eZoom"><button data-z="1" class="${EMP.zoom ? 'on' : ''}">Zoom</button><button data-z="0" class="${EMP.zoom ? '' : 'on'}">Ver todo</button></div><button class="ico" data-png="eCurve">PNG</button></div></div><div class="leg" id="eCurveLeg"></div><div class="chart" style="height:340px"><canvas id="eCurve"></canvas></div>
         <div class="ch" style="margin:8px 0 0"><label class="chk"><input type="checkbox" id="eShowBase"${EMP.showBase ? ' checked' : ''}> ${B0.sob ? 'mostrar LECAP / BONCAP y caución' : 'mostrar prints de ' + esc(B0.label.toLowerCase())}</label><span class="cs" id="eOut"></span></div>
         ${B0.note2 ? `<div class="kwarn" style="margin:6px 0 0">${esc(B0.note2)}</div>` : ''}${B0.note ? `<div class="kwarn" style="margin:6px 0 0">${esc(B0.note)} no tiene prints suficientes en las últimas ruedas: se usa ${esc(B0.label)} como base.</div>` : ''}<div class="hint">Línea blanca: ${B0.sob ? 'curva soberana de tasa fija (Nelson-Siegel sobre LECAP/BONCAP desde ' + SOB_MIN_D + ' días + caución en el tramo corto, en TNA al plazo de cada cheque)' : 'curva base de hoy'}. Banda: dónde debería operar ${esc(E.n.slice(0, 30))} según su historia (base + su spread p25–p75 de cada plazo). Puntos en color: prints de las últimas 5 ruedas (anillo = último día); tenues: anteriores. <span class="ex">EXTRAPOLADA</span> = plazos con pocos prints en la base.</div></div>
-      <div class="card"><div class="ch"><div class="ct">Tasa estimada por tramo</div><div class="tools"><div class="seg" id="eTrTab"></div><button class="ico" data-csv="eTr">CSV</button></div></div><div class="tbl-wrap"><table id="eTr" class="trt"></table></div>
-        <div class="hint">Tasa estimada = base de hoy al plazo promedio de los prints del tramo + spread mediano del emisor en ese tramo (rango habitual: p25–p75). Último print: la operación más reciente del tramo. "vs. estimada": diferencia entre su spread y el mediano (negativo = rindió menos de lo habitual). Se excluyen prints de menos de 7 días. Período y moneda según los filtros; los prints recientes pesan más.</div></div>
+      <div class="card"><div class="ch"><div class="ct">Spread vs. ${B0.sob ? 'soberana' : esc(B0.label)} por tramo</div><div class="tools"><div class="seg" id="eTrTab"></div><button class="ico" data-csv="eTr">CSV</button></div></div><div class="tbl-wrap"><table id="eTr" class="trt"></table></div>
+        <div class="hint">Serie diaria a plazo constante: cada día con operaciones aporta un dato (spread promedio por monto de sus prints, llevados al plazo de referencia del tramo). Tasa estimada = ${B0.sob ? 'soberana' : 'base'} a ese plazo + spread estimado (promedio exponencial con vida media de ${EST_HL} ruedas: lo reciente pesa más; elegido por backtest sobre el histórico). Percentil: dónde cae el último día dentro de su historia (P10 = caro para el comprador, P90 = barato). Δ 1M: últimas 5 ruedas vs. hace ~1 mes. Atenuado: menos de 5 días; con menos de 3 días no se estima tasa.</div></div>
     </div>
-    <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Calculadora de tasa</div><span class="cs">tasa estimada = base de hoy + spread mediano de ese plazo</span></div><div id="eCalc"></div></div></div>
+    <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Relative value · ${esc(E.n.slice(0, 32))} vs. ${B0.sob ? 'soberana' : esc(B0.label)}</div><div class="tools"><span class="cs">spread a plazo constante</span><div class="seg" id="eRVT"></div><button class="ico" data-png="eRV2">PNG</button></div></div>
+      <div class="rv"><div class="rv-l"><div class="leg" id="eRVLeg"></div><div class="chart" style="height:190px"><canvas id="eRV1"></canvas></div><div class="chart" style="height:170px;margin-top:6px"><canvas id="eRV2"></canvas></div></div>
+      <div class="rv-r"><div class="fl" style="margin-bottom:6px">Resumen del spread</div><table class="rvs" id="eRVS"></table><div class="chart" style="height:150px;margin-top:10px"><canvas id="eRVH"></canvas></div></div></div>
+      <div class="hint">Arriba: tasa del emisor llevada al plazo elegido (puntos = días con operaciones) vs. ${B0.sob ? 'soberana interpolada' : 'base'} al mismo plazo. Abajo: spread diario, con su promedio y ±1 desvío. Z-score = cuántos desvíos se aparta el último del promedio; percentil = posición del último dentro del período. Usa prints de la mitad a 1,6 veces el plazo elegido.</div></div></div>
+    <div class="row r-1"><div class="card"><div class="ch"><div class="ct">Calculadora de tasa</div><span class="cs">tasa estimada = base de hoy + spread estimado (EWMA ${EST_HL} ruedas) a ese plazo</span></div><div id="eCalc"></div></div></div>
     <div class="row r-333">
       <div class="card"><div class="ch"><div class="ct">Vencimientos por mes</div><span class="cs">estimado: fecha + plazo</span></div><div class="chart" style="height:220px"><canvas id="eVenc"></canvas></div></div>
       <div class="card"><div class="ch"><div class="ct">Composición</div><span class="cs">${esc(E.n.slice(0, 28))}</span></div><div class="comp" id="eComp"></div></div>
@@ -879,7 +895,7 @@ function renderEmisores() {
   const K = [
     { l: 'Monto', v: fmtMonto(E.m), d: `${fmtN(E.a.length)} ops · ${esc(CAT_S[E.cat] || E.cat || '')}${tierTag}`, hero: 1 },
     { l: 'TNA ponderada', v: fmtN(E.t, 2) + '<small>%</small>', d: B0.sob && E.base ? `soberana a ${fmtN(E.p, 0)} d ${fmtN(E.base.f(E.p), 2)}%` : `${esc(refLbl.toLowerCase())} ${fmtN(wavg(mktR.filter(refFilt)), 2)}%` },
-    { l: 'Spread vs. ' + (B0.sob ? 'soberana' : EMP.ref === 'bench' ? 'comparables' : 'mercado'), v: isFinite(E.spr) ? (E.spr >= 0 ? '+' : '') + fmtN(E.spr, 0) + '<small>pb</small>' : '—', d: (EMP.ref === 'bench' || EMP.ref === 'sob') ? 'mediana vs. ' + esc(B0.label.toLowerCase()) : { cat: 'vs. misma categoría y tramo', seg: 'vs. mismo segmento y tramo', mkt: 'vs. mercado total, mismo tramo' }[EMP.ref] },
+    { l: 'Spread vs. ' + (B0.sob ? 'soberana' : EMP.ref === 'bench' ? 'comparables' : 'mercado'), v: isFinite(E.spr) ? (E.spr >= 0 ? '+' : '') + fmtN(E.spr, 0) + '<small>pb</small>' : '—', d: (EMP.ref === 'bench' || EMP.ref === 'sob') ? 'estimado (EWMA) vs. ' + esc(B0.label.toLowerCase()) : { cat: 'vs. misma categoría y tramo', seg: 'vs. mismo segmento y tramo', mkt: 'vs. mercado total, mismo tramo' }[EMP.ref] },
     { l: 'Plazo prom. pond.', v: fmtN(E.p, 0) + '<small>días</small>', d: `mercado ${fmtN(wavg(mktR, 'ppv'), 0)} d` },
     { l: 'CUIT', v: `<span style="font-size:18px">${esc(E.cuit || '—')}</span>`, d: `<button class="ico" id="eToSpread">Ver spread histórico →</button>` },
   ];
@@ -887,6 +903,7 @@ function renderEmisores() {
   $('eToSpread').onclick = () => { const seg = [...groupBy(E.a, o => o.seg).entries()].sort((x, y) => sum(y[1]) - sum(x[1]))[0][0]; SPR.a = 'emp:' + E.n; SPR.b = 'seg:' + seg; SPR.tramo = true; setView('curvas'); setTimeout(() => $('spTitle').scrollIntoView({ behavior: 'smooth' }), 50); };
 
   renderBenchCharts(ents, today);
+  renderRV(ents, today);
   renderCalc(ents, today);
 
   // Vencimientos (principal)
@@ -973,19 +990,71 @@ function renderTramoTable(W, today) {
   $('eTrTab').onclick = ev => { const b = ev.target.closest('[data-t]'); if (b) { EMP.trTab = +b.dataset.t; renderTramoTable(W, today); } };
   const e = W[EMP.trTab], f = e.base?.f;
   if (!f) { $('eTr').innerHTML = '<tbody><tr><td class="empty">Sin base para hoy.</td></tr></tbody>'; return; }
+  const bl = e.B.sob ? 'Soberana' : 'Base';
   const rows = TRAMOS.map((t, i) => {
-    const v = e.S.tr[i], mid = v ? Math.round(v.x) : TR_MID[i], sp = e.S.at(mid), ext = TR_HI[i] > e.hi;
-    const fair = f(mid) + sp.med / 100, lo = f(mid) + sp.p25 / 100, hi2 = f(mid) + sp.p75 / 100;
-    const lastPt = e.S.pts.filter(x => trIdx(x.o.ppv) === i).sort((a, b) => b.o.date.localeCompare(a.o.date) || b.o.monto - a.o.monto)[0];
-    const dv = lastPt ? lastPt.s - e.S.at(lastPt.o.ppv).med : NaN;
-    const n = v ? v.n : (lastPt ? e.S.pts.filter(x => trIdx(x.o.ppv) === i).length : 0);
-    const thin = n < 3;
-    return `<tr class="${ext ? 'ext' : ''}${thin ? ' thin' : ''}"><td class="l">${t} d${ext ? ' <span class="ex">extrap.</span>' : ''}<div class="mut" style="margin:2px 0 0">${n ? n + ' prints' + (v ? ' · ' + v.dias + (v.dias === 1 ? ' día' : ' días') : '') : 'sin prints'}</div></td>
-      <td><b>${fmtN(fair, 2)}%</b><div class="mut" style="margin:2px 0 0">a ${mid} d</div></td><td>${fmtN(lo, 2)} – ${fmtN(hi2, 2)}%</td>
-      <td>${lastPt ? `${fmtN(lastPt.o.tna, 2)}%<div class="mut" style="margin:2px 0 0">${fmtDs(lastPt.o.date)} · ${lastPt.o.ppv} d</div>` : '—'}</td>
-      <td>${isFinite(dv) ? `${sgnPb(dv)} pb` : '—'}</td></tr>`;
+    const v = e.S.tr[i], T = TR_MID[i], base = f(T), ext = TR_HI[i] > e.hi, dias = v ? v.dias : 0;
+    const ok = dias >= 5, few = dias < 3;
+    const pcCls = !v || !isFinite(v.pct) ? '' : v.pct <= 25 ? 'lo' : v.pct >= 75 ? 'hi' : 'mid';
+    return `<tr class="${ok ? '' : 'dim'}${ext ? ' ext' : ''}">
+      <td class="l">${t} d${ext ? ' <span class="ex">extrap.</span>' : ''}<small>${dias ? dias + (dias === 1 ? ' día' : ' días') + ' · ' + v.prints + ' prints' : 'sin operaciones'}</small></td>
+      <td>${fmtN(base, 2)}%<small>a ${T} d</small></td>
+      <td>${v ? `<b>${sgnPb(v.med)}</b><small>${dias >= 2 ? 'mediana período ' + sgnPb(v.medP) : '1 día'}</small>` : '—'}</td>
+      <td>${v ? `${sgnPb(v.last.s)}${isFinite(v.pct) ? `<span class="pc ${pcCls}">P${v.pct}</span>` : ''}<small>${fmtDs(v.last.date)} · ${fmtN(v.last.o.tna, 2)}%</small>` : '—'}</td>
+      <td>${v && isFinite(v.d1m) ? sgnPb(v.d1m) + ' pb' : '—'}</td>
+      <td>${!v ? '—' : few ? '—<small>pocos datos</small>' : `<b>${fmtN(base + v.med / 100, 2)}%</b><small>${fmtN(base, 2)} ${v.med >= 0 ? '+' : '−'} ${fmtN(Math.abs(v.med) / 100, 2)}</small>`}</td></tr>`;
   });
-  $('eTr').innerHTML = `<thead><tr><th class="l">Tramo</th><th>Tasa estimada</th><th>Rango habitual</th><th>Último print</th><th>vs. estimada</th></tr></thead><tbody>${rows.join('')}</tbody>`;
+  $('eTr').innerHTML = `<thead><tr><th class="l">Tramo</th><th>${bl}</th><th>Spread estimado<br><span class="th2">EWMA · pb</span></th><th>Último spread<br><span class="th2">y percentil</span></th><th>Δ 1M</th><th>Tasa estimada</th></tr></thead><tbody>${rows.join('')}</tbody>`;
+}
+// ── Relative value: serie diaria del spread a plazo constante ──
+function renderRV(ents, today) {
+  const E = ents[0];
+  if (!E.S || !E.S.pts.length) { $('eRVS').innerHTML = '<tr><td class="empty">Sin operaciones en el período.</td></tr>'; return; }
+  const TS = [30, 60, 90, 120, 180];
+  if (!EMP.rvT || EMP.rvMain !== E.n) { EMP.rvMain = E.n; EMP.rvT = TS.reduce((a, b) => Math.abs(b - E.p) < Math.abs(a - E.p) ? b : a, 60); }
+  const T = EMP.rvT;
+  $('eRVT').innerHTML = TS.map(x => `<button data-t="${x}" class="${x === T ? 'on' : ''}">${x} d</button>`).join('');
+  $('eRVT').onclick = ev => { const b = ev.target.closest('[data-t]'); if (b) { EMP.rvT = +b.dataset.t; renderRV(ents, today); } };
+  const ser = E.S.daily(T, x => x.o.ppv >= T * .5 && x.o.ppv <= T * 1.6);
+  const days = DATES.filter(d => d >= F.desde && d <= today);
+  const bc = E.B.sob ? null : benchCurves(E.B, days);
+  const baseAt = d => { const c = E.B.sob ? sobAt(d) : bc.get(d); return c ? c.f(T) : null; };
+  const by = new Map(ser.map(x => [x.date, x]));
+  const lbl = days.map(d => fmtDs(d));
+  const v = ser.map(x => x.s), n = v.length;
+  const mean = n ? v.reduce((a, b) => a + b, 0) / n : NaN, sd = n > 1 ? Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)) : NaN;
+  const sorted = [...v].sort((a, b) => a - b), medv = n ? (n % 2 ? sorted[n >> 1] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2) : NaN;
+  const last = ser[n - 1], hi = ser.reduce((a, b) => (!a || b.s > a.s ? b : a), null), lo = ser.reduce((a, b) => (!a || b.s < a.s ? b : a), null);
+  const z = last && sd > 0 ? (last.s - mean) / sd : NaN, pct = last && n >= 5 ? Math.round(v.filter(x => x <= last.s).length / n * 100) : NaN;
+  legend('eRVLeg', [{ l: `${E.n.slice(0, 26)} a ${T} d`, c: '#e0a84a', cls: 'ln' }, { l: `${E.B.sob ? 'Soberana' : 'Base'} a ${T} d`, c: '#e9ecef', cls: 'ln' }, { l: 'Spread diario', c: '#e8d44d', cls: 'ln' }]);
+  const bLine = days.map(baseAt), iss = days.map((d, k) => by.has(d) && bLine[k] != null ? bLine[k] + by.get(d).s / 100 : null);
+  const yv = [...bLine, ...iss].filter(x => x != null);
+  mkChart('eRV1', { type: 'line', data: { labels: lbl, datasets: [
+    { label: E.n, data: iss, borderColor: '#e0a84a', backgroundColor: '#e0a84a', borderWidth: 1.8, pointRadius: 2.5, spanGaps: true, tension: 0 },
+    { label: 'base', data: bLine, borderColor: '#e9ecef', borderWidth: 1.6, pointRadius: 0, spanGaps: true, tension: .2, fill: '-1', backgroundColor: 'rgba(110,165,20,.15)' }] },
+    options: { interaction: { mode: 'index', intersect: false }, scales: { x: { ...AXX, ticks: { maxTicksLimit: 8 } }, y: { ...AX, min: Math.floor(Math.min(...yv) - .3), max: Math.ceil(Math.max(...yv) + .3), ticks: { callback: x => fmtN(x, 1) + '%' } } },
+      plugins: { tooltip: { callbacks: { label: i => ` ${i.datasetIndex ? (E.B.sob ? 'Soberana' : 'Base') : E.n.slice(0, 20)}: ${i.parsed.y == null ? '—' : fmtN(i.parsed.y, 2) + '%'}` } } } } });
+  const sp = days.map(d => by.has(d) ? by.get(d).s : null);
+  mkChart('eRV2', { type: 'line', data: { labels: lbl, datasets: [
+    { label: 'spread', data: sp, borderColor: '#e8d44d', backgroundColor: 'rgba(232,212,77,.18)', borderWidth: 1.8, pointRadius: 2.5, spanGaps: true, tension: 0, fill: 'origin' },
+    { label: 'prom', data: days.map(() => mean), borderColor: 'rgba(255,255,255,.55)', borderDash: [4, 3], borderWidth: 1, pointRadius: 0 },
+    { label: '+1σ', data: days.map(() => mean + sd), borderColor: 'rgba(255,255,255,.18)', borderWidth: 1, pointRadius: 0 },
+    { label: '−1σ', data: days.map(() => mean - sd), borderColor: 'rgba(255,255,255,.18)', borderWidth: 1, pointRadius: 0 }] },
+    options: { interaction: { mode: 'index', intersect: false }, scales: { x: { ...AXX, ticks: { maxTicksLimit: 8 } }, y: { ...AX, ticks: { callback: x => (x > 0 ? '+' : '') + x } } },
+      plugins: { tooltip: { filter: i => i.datasetIndex === 0 && i.parsed.y != null, callbacks: { label: i => { const o = by.get(days[i.dataIndex]); return ` spread ${sgnPb(i.parsed.y)} pb · ${o.n} prints`; } } } } } });
+  const row = (k, val, cls) => `<tr><td class="l">${k}</td><td class="${cls || ''}">${val}</td></tr>`;
+  $('eRVS').innerHTML = !n ? '<tr><td class="empty">Sin operaciones cerca de ese plazo.</td></tr>' :
+    row('Último', `<b>${sgnPb(last.s)} pb</b> <span class="mut">${fmtDs(last.date)}</span>`) + row('Promedio', sgnPb(mean) + ' pb') + row('Último − promedio', sgnPb(last.s - mean) + ' pb') +
+    row('Mediana', sgnPb(medv) + ' pb') + row('Desvío', isFinite(sd) ? fmtN(sd, 0) + ' pb' : '—') + row('Z-score', isFinite(z) ? fmtN(z, 2) : '—', isFinite(z) ? (z <= -1 ? 'dn' : z >= 1 ? 'up' : '') : '') +
+    row('Percentil', isFinite(pct) ? 'P' + pct : '—') + row('Máximo', `${sgnPb(hi.s)} pb <span class="mut">${fmtDs(hi.date)}</span>`) + row('Mínimo', `${sgnPb(lo.s)} pb <span class="mut">${fmtDs(lo.date)}</span>`) + row('Días con operaciones', `${n} de ${days.length}`);
+  // histograma
+  if (n >= 3) {
+    const rng = sorted[n - 1] - sorted[0], step = [5, 10, 20, 25, 50, 100].find(s => rng / s <= 12) || 100, b0 = Math.floor(sorted[0] / step) * step;
+    const bins = []; for (let x = b0; x <= sorted[n - 1]; x += step) bins.push({ x, c: 0 });
+    v.forEach(s => { bins[Math.min(bins.length - 1, Math.floor((s - b0) / step))].c++; });
+    const lb = Math.floor((last.s - b0) / step);
+    mkChart('eRVH', { type: 'bar', data: { labels: bins.map(b => (b.x > 0 ? '+' : '') + b.x), datasets: [{ data: bins.map(b => b.c), backgroundColor: bins.map((b, k) => k === lb ? '#e8d44d' : 'rgba(110,165,20,.6)'), borderRadius: 2, barPercentage: .9, categoryPercentage: 1 }] },
+      options: { indexAxis: 'y', scales: { x: { ...AX, ticks: { precision: 0 } }, y: { ...AXX, reverse: true, ticks: { font: { size: 10 } } } }, plugins: { tooltip: { callbacks: { title: i => `${i[0].label} a ${(+i[0].label + step > 0 ? '+' : '') + (+i[0].label + step)} pb`, label: i => ` ${i.parsed.x} días` } } } } });
+  } else mkChart('eRVH', { type: 'bar', data: { labels: [], datasets: [] } });
 }
 function renderCalc(ents, today) {
   const W = ents.filter(e => e.S && e.S.all && e.base);
@@ -1003,7 +1072,7 @@ function renderCalc(ents, today) {
     const sp = e.S.at(p), b = f(p), fair = b + sp.med / 100, lo = b + sp.p25 / 100, hi2 = b + sp.p75 / 100;
     $('kF').textContent = fmtN(fair, 2) + '%';
     $('kR').textContent = `rango ${fmtN(lo, 2)}% – ${fmtN(hi2, 2)}% · TEA ${fmtN(tea(fair, p), 2)}%`;
-    $('kRes').innerHTML = [['Base' + (p > e.hi ? ' (extrap.)' : ''), fmtN(b, 2) + '%'], ['Spread mediano', sgnPb(sp.med) + ' pb'], ['Spread p25 / p75', `${sgnPb(sp.p25)} / ${sgnPb(sp.p75)} pb`], ['Fuente spread', sp.src === 'tramo' ? 'tramo del plazo' : 'general']]
+    $('kRes').innerHTML = [['Base' + (p > e.hi ? ' (extrap.)' : ''), fmtN(b, 2) + '%'], ['Spread estimado', sgnPb(sp.med) + ' pb'], ['Spread p25 / p75', `${sgnPb(sp.p25)} / ${sgnPb(sp.p75)} pb`], ['Fuente spread', sp.src === 'tramo' ? 'tramo del plazo' : 'general']]
       .map(r => `<div><span>${esc(r[0])}</span><b>${r[1]}</b></div>`).join('');
     $('kW').textContent = p > e.hi ? '⚠ A este plazo el benchmark casi no opera: la base es extrapolada y el resultado es menos confiable.' : '';
     const g = new Map(); e.S.pts.forEach(x => { const k = x.o.date + '|' + x.o.ppv + '|' + x.o.tna; const y = g.get(k); if (y) y.m += x.o.monto; else g.set(k, { o: x.o, s: x.s, m: x.o.monto }); });
